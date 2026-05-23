@@ -1,0 +1,280 @@
+:root {
+  --bg: #0e1117;
+  --panel: #161b22;
+  --border: #2a3038;
+  --text: #d6dce5;
+  --muted: #8b949e;
+  --up: #26a69a;
+  --down: #ef5350;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+.app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 16px;
+  background: var(--panel);
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.toolbar h1 {
+  font-size: 16px;
+  margin: 0;
+  letter-spacing: 0.5px;
+}
+
+.toolbar .spacer { flex: 1; }
+
+.toolbar label { color: var(--muted); font-size: 13px; }
+
+.count-group { display: flex; gap: 4px; }
+
+.count-group button {
+  background: #21262d;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 12px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.count-group button.active {
+  background: #2f81f7;
+  border-color: #2f81f7;
+  color: #fff;
+}
+
+/* Grid with draggable gutters; column/row templates are set inline per chart count.
+   Gutters occupy their own tracks, so there's no `gap`. */
+.grid {
+  flex: 1 1 auto;
+  display: grid;
+  gap: 0;
+  padding: 6px;
+  min-height: 0;
+}
+
+.grid.dragging { user-select: none; cursor: grabbing; }
+/* Keep charts from swallowing pointer events mid-drag. */
+.grid.dragging .pane-cell { pointer-events: none; }
+
+.pane-cell { min-width: 0; min-height: 0; display: flex; }
+.pane-cell > .pane { flex: 1 1 auto; min-width: 0; }
+
+.gutter {
+  background: transparent;
+  z-index: 5;
+  transition: background 120ms ease;
+}
+.gutter:hover, .grid.dragging .gutter { background: #2f81f7; }
+.gutter-col { cursor: col-resize; }
+.gutter-row { cursor: row-resize; z-index: 6; }
+
+.pane {
+  display: flex;
+  flex-direction: column;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  /* visible so the symbol-search dropdown can overflow the pane bounds */
+  overflow: visible;
+  min-height: 0;
+}
+
+.pane-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border);
+  flex: 0 0 auto;
+}
+
+.pane-header select {
+  background: #21262d;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 6px;
+  font-size: 12px;
+}
+
+/* Drawing tools + indicators toolbar */
+.tools { display: flex; align-items: center; gap: 3px; }
+
+.tool {
+  background: #21262d;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  width: 24px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.tool:hover { border-color: #3b434d; }
+.tool.active { background: #2f81f7; border-color: #2f81f7; color: #fff; }
+
+.menu-wrap { position: relative; }
+
+.tool-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  right: 0;
+  z-index: 50;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  padding: 4px;
+  min-width: 150px;
+}
+.menu-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 6px 8px;
+  font-size: 12px;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.menu-item:hover { background: #21262d; }
+
+.ticker {
+  margin-left: auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 2px 8px;
+  border-radius: 4px;
+  transition: background 120ms ease;
+}
+.ticker.up { color: var(--up); }
+.ticker.down { color: var(--down); }
+.ticker.flash-up { background: rgba(38, 166, 154, 0.25); }
+.ticker.flash-down { background: rgba(239, 83, 80, 0.25); }
+
+.chart-host {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+  overflow: hidden;
+  border-radius: 0 0 8px 8px;
+  background: var(--panel);
+}
+
+/* Searchable symbol picker */
+.symbol-search { position: relative; }
+
+.symbol-btn {
+  background: #21262d;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.symbol-btn .caret { color: var(--muted); }
+
+.symbol-dropdown {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  z-index: 50;
+  width: 250px;
+  background: var(--panel);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+.symbol-input {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  color: var(--text);
+  padding: 8px 10px;
+  font-size: 13px;
+  outline: none;
+}
+
+.symbol-results { max-height: 260px; overflow-y: auto; }
+
+.symbol-result {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: var(--text);
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.symbol-result:hover { background: #21262d; }
+.symbol-result .row { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.symbol-result .sym { font-weight: 600; font-size: 12px; }
+.symbol-result .name { color: var(--muted); font-size: 11px; }
+
+.badge {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.4px;
+  padding: 1px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  color: var(--muted);
+  white-space: nowrap;
+}
+.badge-hyperliquid { color: #7ee787; border-color: #2ea04366; }
+.badge-yfinance { color: #79c0ff; border-color: #1f6febaa; }
+
+.symbol-empty { padding: 10px; color: var(--muted); font-size: 12px; }
+
+.pane-error {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--down);
+  font-size: 12px;
+  padding: 8px;
+  text-align: center;
+}
