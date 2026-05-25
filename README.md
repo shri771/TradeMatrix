@@ -17,7 +17,22 @@ picks a data source, symbol, and timeframe. Live crypto comes from **Hyperliquid
   drawings; the `ƒ` menu toggles MA/EMA/BOLL overlays and VOL/MACD/RSI/KDJ sub-pane
   indicators. Indicator selections persist; drawings reset on instrument/timeframe
   change.
+- **ICT HTF candles** (inspired by fadi's indicator): the `ƒ` menu can stack
+  higher-timeframe candle panels (1H / 4H / 1D) in the right margin of any pane,
+  fetched from the backend and aligned to the price axis.
 - **Resizable panes** — drag the dividers between charts; sizes persist per layout.
+- **Bar replay** — the toolbar's Replay mode steps the whole dashboard through history
+  on one synced clock (as-of date, play/pause, 1×–10× speed, step, scrubber); every
+  pane reveals candles up to the clock.
+- **Paper trading** — a simulated account (the `$` per-pane panel): buy/sell/flat at
+  the current price (replay or live), long/short with netted realized + unrealized
+  P&L, on-chart trade markers, and a toolbar account summary with equity, P&L and an
+  equity-curve sparkline.
+- **Strategy backtests** — the `Σ` per-pane panel runs built-in strategies (SMA/EMA
+  crossover, RSI mean-reversion, Donchian breakout) with editable params over a
+  window of the instrument, reporting return, win rate, max drawdown, profit factor
+  and an equity curve, with entry markers on the chart. Runs client-side (next-bar
+  fills, fees, no look-ahead).
 
 ## Architecture
 

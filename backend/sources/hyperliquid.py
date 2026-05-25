@@ -42,7 +42,8 @@ def _to_candle(raw: dict) -> Candle:
 
 class HyperliquidSource(DataSource):
     name = "hyperliquid"
-    intervals = list(_INTERVAL_MS.keys())
+    # Canonical timeframe set shared across all sources (identical UI everywhere).
+    intervals = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"]
 
     def __init__(self):
         self._universe: list[str] | None = None
@@ -68,13 +69,15 @@ class HyperliquidSource(DataSource):
         matches.sort(key=lambda s: (not s.upper().startswith(q), s))
         return [{"symbol": s, "name": f"{s}-PERP"} for s in matches[:50]]
 
-    async def get_candles(self, symbol: str, interval: str, limit: int = 500) -> list[Candle]:
+    async def get_candles(
+        self, symbol: str, interval: str, limit: int = 500, end: int | None = None
+    ) -> list[Candle]:
         step = _INTERVAL_MS.get(interval, 60_000)
-        end = int(time.time() * 1000)
-        start = end - step * limit
+        end_ms = int(time.time() * 1000) if end is None else end * 1000
+        start_ms = end_ms - step * limit
         payload = {
             "type": "candleSnapshot",
-            "req": {"coin": symbol, "interval": interval, "startTime": start, "endTime": end},
+            "req": {"coin": symbol, "interval": interval, "startTime": start_ms, "endTime": end_ms},
         }
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.post(INFO_URL, json=payload)

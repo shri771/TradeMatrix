@@ -33,8 +33,12 @@ class DataSource(ABC):
         return [{"symbol": s, "name": s} for s in syms if q in s.lower()]
 
     @abstractmethod
-    async def get_candles(self, symbol: str, interval: str, limit: int = 500) -> list[Candle]:
-        """Historical candles, oldest-first. Used for chart init and (future) replay."""
+    async def get_candles(
+        self, symbol: str, interval: str, limit: int = 500, end: int | None = None
+    ) -> list[Candle]:
+        """Historical candles, oldest-first. `end` (unix seconds) returns the `limit`
+        bars ending at/just before that time (used by replay to start from a past date);
+        omitted means the most recent bars."""
 
     @abstractmethod
     async def stream(self, symbol: str, interval: str) -> AsyncIterator[Candle]:

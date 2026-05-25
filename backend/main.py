@@ -31,9 +31,10 @@ async def candles(
     symbol: str = Query(...),
     interval: str = Query(...),
     limit: int = Query(500, ge=1, le=5000),
+    end: int | None = Query(None, description="unix seconds; return bars ending at/before this time"),
 ):
     src = get_source(source)
-    data = await src.get_candles(symbol, interval, limit)
+    data = await src.get_candles(symbol, interval, limit, end)
     return [c.to_dict() for c in data]
 
 

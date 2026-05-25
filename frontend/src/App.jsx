@@ -1,7 +1,11 @@
 import React, { useEffect, useState } from "react";
 import { fetchSources } from "./lib/api";
 import { StreamProvider } from "./ws/StreamProvider";
+import { ReplayProvider } from "./replay/ReplayProvider";
+import { TradingProvider } from "./trading/TradingProvider";
 import ChartGrid from "./components/ChartGrid";
+import ReplayBar from "./components/ReplayBar";
+import AccountBar from "./components/AccountBar";
 
 const COUNT_OPTIONS = [1, 2, 4, 6, 8];
 const COUNT_KEY = "tm:chartCount";
@@ -23,7 +27,7 @@ function loadPanes() {
 function defaultPane(sources) {
   const s = sources[0];
   const interval = s.intervals.includes("1m") ? "1m" : s.intervals[0];
-  return { source: s.name, symbol: s.symbols[0], interval, indicators: [] };
+  return { source: s.name, symbol: s.symbols[0], interval, indicators: [], htfs: [] };
 }
 
 export default function App() {
@@ -75,25 +79,31 @@ export default function App() {
 
   return (
     <StreamProvider>
-      <div className="app">
-        <div className="toolbar">
-          <h1>TradeMatrix</h1>
-          <span className="spacer" />
-          <label>Number of charts</label>
-          <div className="count-group">
-            {COUNT_OPTIONS.map((n) => (
-              <button
-                key={n}
-                className={n === count ? "active" : ""}
-                onClick={() => setCount(n)}
-              >
-                {n}
-              </button>
-            ))}
+      <ReplayProvider>
+        <TradingProvider>
+          <div className="app">
+            <div className="toolbar">
+              <h1>TradeMatrix</h1>
+              <ReplayBar />
+              <span className="spacer" />
+              <AccountBar />
+              <label>Number of charts</label>
+              <div className="count-group">
+                {COUNT_OPTIONS.map((n) => (
+                  <button
+                    key={n}
+                    className={n === count ? "active" : ""}
+                    onClick={() => setCount(n)}
+                  >
+                    {n}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <ChartGrid count={count} panes={panes} sources={sources} onPaneChange={onPaneChange} />
           </div>
-        </div>
-        <ChartGrid count={count} panes={panes} sources={sources} onPaneChange={onPaneChange} />
-      </div>
+        </TradingProvider>
+      </ReplayProvider>
     </StreamProvider>
   );
 }

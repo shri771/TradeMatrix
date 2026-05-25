@@ -18,4 +18,4 @@ if [ -n "$LIBS" ]; then
   export LD_LIBRARY_PATH="${LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-exec .venv/bin/uvicorn main:app --reload --port 8000
+exec .venv/bin/uvicorn main:app --reload --port 8080

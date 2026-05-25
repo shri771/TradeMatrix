@@ -3,8 +3,8 @@ import ChartPane from "./ChartPane";
 
 // Cleanest column count for each chart count (rows flow automatically).
 const COLUMNS = { 1: 1, 2: 2, 4: 2, 6: 3, 8: 4 };
-const GUTTER = 6; // px between panes (draggable)
-const MIN_FR = 0.18; // a track can't be dragged smaller than this fraction
+const GUTTER = 6; // px hit area between panes (draggable)
+const MIN_PX = 50; // a pane can't be dragged narrower/shorter than this
 const SIZES_KEY = "tm:sizes";
 
 function loadSizes() {
@@ -21,7 +21,7 @@ export default function ChartGrid({ count, panes, sources, onPaneChange }) {
   const key = String(count);
 
   const [allSizes, setAllSizes] = useState(loadSizes);
-  const [dragging, setDragging] = useState(false);
+  const [drag, setDrag] = useState(null); // { type, index } of the active gutter
   const gridRef = useRef(null);
   const dragRef = useRef(null);
 
@@ -38,63 +38,69 @@ export default function ChartGrid({ count, panes, sources, onPaneChange }) {
       : { cols: Array(cols).fill(1), rows: Array(rows).fill(1) };
 
   const setTrack = (type, arr) => {
-    setAllSizes((prev) => ({
-      ...prev,
-      [key]: { ...sizes, [type]: arr },
-    }));
+    setAllSizes((prev) => ({ ...prev, [key]: { ...sizes, [type]: arr } }));
   };
 
+  // Track the cursor's pixel position within the dragged pair so the divider
+  // follows the mouse 1:1 on any screen size (no proportional speed-up).
   const onPointerMove = (e) => {
     const d = dragRef.current;
     if (!d) return;
-    const pos = d.type === "cols" ? e.clientX : e.clientY;
-    const total = d.snapshot.reduce((a, b) => a + b, 0);
-    const deltaFr = ((pos - d.startPos) / d.extent) * total;
+    const cursor = d.type === "cols" ? e.clientX : e.clientY;
+    let boundary = cursor - d.pairStart;
+    boundary = Math.max(MIN_PX, Math.min(d.pairPx - MIN_PX, boundary));
+    const fracA = d.pairFr * (boundary / d.pairPx);
     const arr = [...d.snapshot];
-    const pairSum = arr[d.index] + arr[d.index + 1];
-    let a = Math.max(MIN_FR, Math.min(pairSum - MIN_FR, arr[d.index] + deltaFr));
-    arr[d.index] = a;
-    arr[d.index + 1] = pairSum - a;
+    arr[d.index] = fracA;
+    arr[d.index + 1] = d.pairFr - fracA;
     setTrack(d.type, arr);
   };
 
   const endDrag = () => {
     dragRef.current = null;
-    setDragging(false);
+    setDrag(null);
     window.removeEventListener("pointermove", onPointerMove);
     window.removeEventListener("pointerup", endDrag);
   };
 
   const startDrag = (type, index, e) => {
     e.preventDefault();
-    const rect = gridRef.current.getBoundingClientRect();
-    const gutterCount = (type === "cols" ? cols : rows) - 1;
-    const extent =
-      (type === "cols" ? rect.width : rect.height) - gutterCount * GUTTER;
+    const grid = gridRef.current;
+    const attr = type === "cols" ? "data-col" : "data-row";
+    const a = grid.querySelector(`[${attr}="${index}"]`);
+    const b = grid.querySelector(`[${attr}="${index + 1}"]`);
+    if (!a || !b) return;
+    const ra = a.getBoundingClientRect();
+    const rb = b.getBoundingClientRect();
+    const pairStart = type === "cols" ? ra.left : ra.top;
+    const pairEnd = type === "cols" ? rb.right : rb.bottom;
     dragRef.current = {
       type,
       index,
-      startPos: type === "cols" ? e.clientX : e.clientY,
       snapshot: [...sizes[type]],
-      extent,
+      pairFr: sizes[type][index] + sizes[type][index + 1],
+      pairStart,
+      pairPx: pairEnd - pairStart,
     };
-    setDragging(true);
+    setDrag({ type, index });
     window.addEventListener("pointermove", onPointerMove);
     window.addEventListener("pointerup", endDrag);
   };
 
   // Build templates with gutter tracks interleaved between content tracks.
   const colTemplate = sizes.cols
-    .map((f) => `minmax(80px, ${f}fr)`)
+    .map((f) => `minmax(40px, ${f}fr)`)
     .join(` ${GUTTER}px `);
   const rowTemplate = sizes.rows
-    .map((f) => `minmax(60px, ${f}fr)`)
+    .map((f) => `minmax(40px, ${f}fr)`)
     .join(` ${GUTTER}px `);
+
+  const isActive = (type, index) => drag && drag.type === type && drag.index === index;
 
   return (
     <div
       ref={gridRef}
-      className={`grid${dragging ? " dragging" : ""}`}
+      className={`grid${drag ? " dragging" : ""}`}
       style={{ gridTemplateColumns: colTemplate, gridTemplateRows: rowTemplate }}
     >
       {Array.from({ length: count }, (_, i) => {
@@ -104,6 +110,8 @@ export default function ChartGrid({ count, panes, sources, onPaneChange }) {
           <div
             key={i}
             className="pane-cell"
+            data-col={c}
+            data-row={r}
             style={{ gridColumn: 2 * c + 1, gridRow: 2 * r + 1 }}
           >
             <ChartPane
@@ -120,7 +128,7 @@ export default function ChartGrid({ count, panes, sources, onPaneChange }) {
       {Array.from({ length: cols - 1 }, (_, j) => (
         <div
           key={`c${j}`}
-          className="gutter gutter-col"
+          className={`gutter gutter-col${isActive("cols", j) ? " active" : ""}`}
           style={{ gridColumn: 2 * j + 2, gridRow: "1 / -1" }}
           onPointerDown={(e) => startDrag("cols", j, e)}
         />
@@ -130,7 +138,7 @@ export default function ChartGrid({ count, panes, sources, onPaneChange }) {
       {Array.from({ length: rows - 1 }, (_, i) => (
         <div
           key={`r${i}`}
-          className="gutter gutter-row"
+          className={`gutter gutter-row${isActive("rows", i) ? " active" : ""}`}
           style={{ gridRow: 2 * i + 2, gridColumn: "1 / -1" }}
           onPointerDown={(e) => startDrag("rows", i, e)}
         />

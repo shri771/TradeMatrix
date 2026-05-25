@@ -8,10 +8,11 @@ import { useStream } from "../ws/StreamProvider";
  * `onUpdate` (single candle per tick); the consumer feeds them to the chart.
  * Re-runs on source/symbol/interval change and unsubscribes on unmount.
  */
-export function useCandleStream({ paneId, source, symbol, interval, onHistory, onUpdate, onError }) {
+export function useCandleStream({ paneId, source, symbol, interval, enabled = true, onHistory, onUpdate, onError }) {
   const { subscribe, unsubscribe } = useStream();
 
   useEffect(() => {
+    if (!enabled) return;
     let cancelled = false;
 
     async function init() {
@@ -39,5 +40,5 @@ export function useCandleStream({ paneId, source, symbol, interval, onHistory, o
       unsubscribe(paneId);
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [paneId, source, symbol, interval]);
+  }, [paneId, source, symbol, interval, enabled]);
 }

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import datetime
+import time
 from typing import AsyncIterator
 
 import yfinance as yf
@@ -8,15 +10,25 @@ import yfinance as yf
 from models import Candle
 from sources.base import DataSource
 
-# yfinance interval -> (history period to request, poll cadence in seconds).
+# Approx seconds per canonical interval, for computing a start date from an `end`.
+_INTERVAL_SECONDS = {
+    "1m": 60, "3m": 180, "5m": 300, "15m": 900,
+    "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400,
+}
+
+# Canonical interval -> (history period, poll cadence seconds, Yahoo native interval,
+# resample rule | None). Canonical labels are shared with every source. Yahoo lacks
+# 3m and 4h, so we fetch a finer native interval and resample. Yahoo's "1h" is "60m".
 # Intraday history is limited by Yahoo (e.g. 1m only ~7 days), so periods are conservative.
 _INTERVAL_CFG = {
-    "1m": ("5d", 5),
-    "5m": ("1mo", 15),
-    "15m": ("1mo", 30),
-    "30m": ("3mo", 60),
-    "60m": ("6mo", 120),
-    "1d": ("2y", 300),
+    "1m": ("5d", 5, "1m", None),
+    "3m": ("5d", 10, "1m", "3min"),
+    "5m": ("1mo", 15, "5m", None),
+    "15m": ("1mo", 30, "15m", None),
+    "30m": ("3mo", 60, "30m", None),
+    "1h": ("6mo", 120, "60m", None),
+    "4h": ("2y", 300, "60m", "4h"),
+    "1d": ("2y", 300, "1d", None),
 }
 
 
@@ -64,24 +76,73 @@ class YFinanceSource(DataSource):
         except Exception:
             return []
 
-    def _fetch(self, symbol: str, interval: str, limit: int) -> list[Candle]:
-        period, _ = _INTERVAL_CFG.get(interval, ("5d", 5))
-        df = yf.Ticker(symbol).history(period=period, interval=interval)
+    def _fetch(self, symbol: str, interval: str, limit: int, end: int | None) -> list[Candle]:
+        period, _, native, rule = _INTERVAL_CFG.get(interval, ("5d", 5, "1m", None))
+        ticker = yf.Ticker(symbol)
+        if end is None:
+            df = ticker.history(period=period, interval=native)
+        else:
+            # Fetch a window ending at `end`; 3x buffer covers weekends/holidays.
+            sec = _INTERVAL_SECONDS.get(interval, 60)
+            end_dt = datetime.datetime.fromtimestamp(end, datetime.timezone.utc)
+            start_dt = end_dt - datetime.timedelta(seconds=sec * limit * 3)
+            df = ticker.history(start=start_dt, end=end_dt, interval=native)
         if df.empty:
             return []
+        if rule:
+            df = (
+                df.resample(rule, label="left", closed="left")
+                .agg({"Open": "first", "High": "max", "Low": "min", "Close": "last", "Volume": "sum"})
+                .dropna(subset=["Open", "High", "Low", "Close"])
+            )
         candles = _df_to_candles(df)
         return candles[-limit:]
 
-    async def get_candles(self, symbol: str, interval: str, limit: int = 500) -> list[Candle]:
-        return await asyncio.to_thread(self._fetch, symbol, interval, limit)
+    async def get_candles(
+        self, symbol: str, interval: str, limit: int = 500, end: int | None = None
+    ) -> list[Candle]:
+        return await asyncio.to_thread(self._fetch, symbol, interval, limit, end)
+
+    def _last_price(self, ticker) -> float | None:
+        try:
+            fi = ticker.fast_info
+            p = None
+            try:
+                p = fi["lastPrice"]
+            except Exception:
+                p = getattr(fi, "last_price", None)
+            return float(p) if p is not None else None
+        except Exception:
+            return None
 
     async def stream(self, symbol: str, interval: str) -> AsyncIterator[Candle]:
-        _, poll_secs = _INTERVAL_CFG.get(interval, ("5d", 5))
+        _, bar_poll, _, _ = _INTERVAL_CFG.get(interval, ("5d", 5, "1m", None))
+        ticker = yf.Ticker(symbol)
+        last_bar: Candle | None = None
+        next_refetch = 0.0
         while True:
-            try:
-                candles = await asyncio.to_thread(self._fetch, symbol, interval, 2)
-                if candles:
-                    yield candles[-1]
-            except Exception:
-                pass  # transient Yahoo error; retry next poll
-            await asyncio.sleep(poll_secs)
+            now = time.time()
+            # Roll new bars on the interval cadence (full fetch + resample).
+            if now >= next_refetch:
+                try:
+                    bars = await asyncio.to_thread(self._fetch, symbol, interval, 2, None)
+                    if bars and (last_bar is None or bars[-1].time >= last_bar.time):
+                        last_bar = bars[-1]
+                        yield last_bar
+                except Exception:
+                    pass
+                next_refetch = now + bar_poll
+            # Lightweight price tick between bar rolls so the current bar moves live
+            # during market hours (frozen when the market is closed — no new quote).
+            price = await asyncio.to_thread(self._last_price, ticker)
+            if price is not None and last_bar is not None and price != last_bar.close:
+                last_bar = Candle(
+                    time=last_bar.time,
+                    open=last_bar.open,
+                    high=max(last_bar.high, price),
+                    low=min(last_bar.low, price),
+                    close=price,
+                    volume=last_bar.volume,
+                )
+                yield last_bar
+            await asyncio.sleep(5)
