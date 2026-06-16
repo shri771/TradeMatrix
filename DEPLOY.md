@@ -54,20 +54,33 @@ gcloud auth configure-docker "${REGION}-docker.pkg.dev"
 
 ## 2. Store the Databento key in Secret Manager
 
+`gcloud secrets versions add` always takes the secret name and a path to a file
+containing the raw value:
+
+```
+gcloud secrets versions add SECRET_NAME --data-file=PATH_TO_FILE
+```
+
+So the simple, shell-independent way:
+
 ```bash
 # Create the secret resource (one-time, no value yet).
 gcloud secrets create "$SECRET" --replication-policy=automatic
 
-# Add the key value as the first version. Either pipe it in:
-printf '%s' 'db-XXXXXXXXXXXXXXXXXX' | gcloud secrets versions add "$SECRET" --data-file=-
+# Put the raw key value into a temp file (just the value — NO "DATABENTO_API_KEY="
+# prefix, NO quotes, NO trailing newline).
+echo -n "db-YOUR-ACTUAL-KEY-HERE" > /tmp/dbnto.key
 
-# ...or load it from a local file (e.g. your existing .env), which is safer for
-# pasting/typing in a shell:
-gcloud secrets versions add "$SECRET" --data-file=- < <(grep '^DATABENTO_API_KEY=' .env | cut -d= -f2-)
+# Add it as the first version of the secret.
+gcloud secrets versions add "$SECRET" --data-file=/tmp/dbnto.key
+
+# Wipe the temp file.
+shred -u /tmp/dbnto.key   # or: rm /tmp/dbnto.key
 ```
 
-To rotate the key later, run the same `versions add` again — Cloud Run will pick
-up `:latest` on the next deploy/revision.
+To rotate the key later: write the new value to a fresh temp file and run the
+same `versions add` again — Cloud Run will pick up `:latest` on the next
+deploy/revision.
 
 ---
 
