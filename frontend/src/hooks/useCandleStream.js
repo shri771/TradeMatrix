@@ -2,7 +2,10 @@ import { useEffect } from "react";
 import { fetchCandles } from "../lib/api";
 import { useStream } from "../ws/StreamProvider";
 
-const INITIAL_BARS = 1500; // load a deep initial window; scroll-back loads more
+// Load the backend's max window upfront so deep-history sources (Databento) show
+// their full history immediately (~20 years on 1d). Sources with less just return
+// what they have; scroll-back lazy-load fills in anything older still.
+const INITIAL_BARS = 5000;
 
 /**
  * Loads historical candles, then subscribes to live updates for this pane.

@@ -6,7 +6,13 @@ cd "$(dirname "$0")"
 
 if [ ! -d .venv ]; then
   python3 -m venv .venv
-  .venv/bin/pip install -r requirements.txt
+fi
+# Always reconcile deps so adding to requirements.txt works without re-creating the venv.
+.venv/bin/pip install -q -r requirements.txt
+
+# Load local secrets from .env at the repo root (gitignored).
+if [ -f ../.env ]; then
+  set -a; . ../.env; set +a
 fi
 
 LIBS=""
@@ -18,4 +24,4 @@ if [ -n "$LIBS" ]; then
   export LD_LIBRARY_PATH="${LIBS}${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 fi
 
-exec .venv/bin/uvicorn main:app --reload --port 8080
+exec .venv/bin/uvicorn main:app --reload --port "${PORT:-1030}"

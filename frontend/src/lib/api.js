@@ -4,8 +4,9 @@ export async function fetchSources() {
   return res.json();
 }
 
-export async function fetchCandles(source, symbol, interval, limit = 500) {
+export async function fetchCandles(source, symbol, interval, limit = 500, end) {
   const params = new URLSearchParams({ source, symbol, interval, limit });
+  if (end != null) params.set("end", end);
   const res = await fetch(`/api/candles?${params}`);
   if (!res.ok) throw new Error(`failed to load candles: ${res.status}`);
   return res.json();

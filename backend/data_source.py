@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from sources.base import DataSource
+from sources.databento_source import DatabentoSource
 from sources.hyperliquid import HyperliquidSource
 from sources.yfinance_source import YFinanceSource
 
@@ -11,6 +12,7 @@ from sources.yfinance_source import YFinanceSource
 REGISTRY: dict[str, DataSource] = {
     "hyperliquid": HyperliquidSource(),
     "yfinance": YFinanceSource(),
+    "databento": DatabentoSource(),
 }
 
 

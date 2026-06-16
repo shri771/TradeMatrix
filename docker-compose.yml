@@ -1,3 +1,6 @@
+# Local Docker testing only. Production deploys to Cloud Run — see DEPLOY.md.
+# No secrets are read from the host here; Cloud Run injects DATABENTO_API_KEY
+# from Secret Manager at runtime.
 services:
   tradematrix:
     build: .

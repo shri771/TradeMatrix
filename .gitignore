@@ -10,3 +10,4 @@ frontend/dist/
 # Editor / OS
 .DS_Store
 *.log
+.env
