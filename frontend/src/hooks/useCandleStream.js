@@ -2,6 +2,8 @@ import { useEffect } from "react";
 import { fetchCandles } from "../lib/api";
 import { useStream } from "../ws/StreamProvider";
 
+const INITIAL_BARS = 1500; // load a deep initial window; scroll-back loads more
+
 /**
  * Loads historical candles, then subscribes to live updates for this pane.
  * Reports raw backend candles (time in seconds) via `onHistory` (full array) and
@@ -17,7 +19,7 @@ export function useCandleStream({ paneId, source, symbol, interval, enabled = tr
 
     async function init() {
       try {
-        const history = await fetchCandles(source, symbol, interval);
+        const history = await fetchCandles(source, symbol, interval, INITIAL_BARS);
         if (cancelled) return;
         onHistory?.(history);
         onError?.(null);

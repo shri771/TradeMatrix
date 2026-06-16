@@ -78,7 +78,7 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     onHistory: (cands) => {
       const chart = chartRef.current;
       if (!chart) return;
-      chart.applyNewData(cands.map(toKline));
+      chart.applyNewData(cands.map(toKline), true); // more=true -> allow loading older
       const last = cands[cands.length - 1];
       if (last) mark(last.close, last.time);
     },
@@ -102,6 +102,31 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     ready,
     onPrice: mark,
   });
+
+  // Endless history (live mode): when the user scrolls back to the oldest bar,
+  // fetch a batch of older candles until the data source runs out.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !ready || isReplay) return;
+    chart.setLoadDataCallback(async ({ type, data, callback }) => {
+      if (type !== "forward" || !data) {
+        callback([], true);
+        return;
+      }
+      try {
+        const end = Math.floor(data.timestamp / 1000) - 1;
+        const older = await fetchCandles(config.source, config.symbol, config.interval, 500, end);
+        const klines = older.filter((c) => c.time * 1000 < data.timestamp).map(toKline);
+        callback(klines, klines.length > 0);
+      } catch {
+        callback([], false);
+      }
+    });
+    return () => {
+      try { chart.setLoadDataCallback(() => {}); } catch {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, isReplay, config.source, config.symbol, config.interval]);
 
   const sourceDef = sources.find((s) => s.name === config.source) ?? sources[0];
 

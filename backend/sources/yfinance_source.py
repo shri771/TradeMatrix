@@ -16,6 +16,18 @@ _INTERVAL_SECONDS = {
     "30m": 1800, "1h": 3600, "4h": 14400, "1d": 86400,
 }
 
+# Yahoo's max history per NATIVE interval (days). Intraday is heavily capped; daily+
+# is effectively unlimited.
+_YAHOO_MAX_DAYS = {"1m": 7, "5m": 60, "15m": 60, "30m": 60, "60m": 730, "1d": 100000}
+
+
+def _period_days(interval: str, native: str, limit: int) -> int:
+    """Calendar days to request so `limit` bars are available (with a buffer for
+    weekends/holidays), capped by Yahoo's history limit for that native interval."""
+    sec = _INTERVAL_SECONDS.get(interval, 60)
+    need = int(sec * limit * 1.7 / 86400) + 2
+    return max(2, min(need, _YAHOO_MAX_DAYS.get(native, 100000)))
+
 # Canonical interval -> (history period, poll cadence seconds, Yahoo native interval,
 # resample rule | None). Canonical labels are shared with every source. Yahoo lacks
 # 3m and 4h, so we fetch a finer native interval and resample. Yahoo's "1h" is "60m".
@@ -77,10 +89,13 @@ class YFinanceSource(DataSource):
             return []
 
     def _fetch(self, symbol: str, interval: str, limit: int, end: int | None) -> list[Candle]:
-        period, _, native, rule = _INTERVAL_CFG.get(interval, ("5d", 5, "1m", None))
+        _, _, native, rule = _INTERVAL_CFG.get(interval, ("5d", 5, "1m", None))
         ticker = yf.Ticker(symbol)
         if end is None:
-            df = ticker.history(period=period, interval=native)
+            # Period scales with the requested bar count (so the backtest can pull a
+            # long window) while live/replay requests stay small.
+            days = _period_days(interval, native, limit)
+            df = ticker.history(period=f"{days}d", interval=native)
         else:
             # Fetch a window ending at `end`; 3x buffer covers weekends/holidays.
             sec = _INTERVAL_SECONDS.get(interval, 60)

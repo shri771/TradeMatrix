@@ -3,7 +3,7 @@ import { fetchCandles } from "../lib/api";
 import { STRATEGIES } from "../backtest/strategies";
 import { runBacktest } from "../backtest/engine";
 
-const BT_BARS = 1000;
+const BAR_OPTIONS = [500, 1000, 2500, 5000]; // 5000 = backend max; sources may return fewer
 
 function defaultParams(key) {
   return Object.fromEntries(STRATEGIES[key].params.map((p) => [p.key, p.default]));
@@ -34,6 +34,7 @@ const pct = (n) => (n == null ? "—" : `${n >= 0 ? "+" : ""}${n.toFixed(1)}%`);
 export default function BacktestPanel({ source, symbol, interval, onResult }) {
   const [key, setKey] = useState("smaCross");
   const [params, setParams] = useState(() => defaultParams("smaCross"));
+  const [bars, setBars] = useState(5000); // default to the max window
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -49,7 +50,7 @@ export default function BacktestPanel({ source, symbol, interval, onResult }) {
     setRunning(true);
     setError(null);
     try {
-      const cs = await fetchCandles(source, symbol, interval, BT_BARS);
+      const cs = await fetchCandles(source, symbol, interval, bars);
       if (cs.length < 30) throw new Error("not enough history");
       const r = runBacktest(cs, (candles) => strat.signal(candles, params), {
         allowShort: strat.allowShort,
@@ -87,6 +88,14 @@ export default function BacktestPanel({ source, symbol, interval, onResult }) {
             />
           </label>
         ))}
+        <label className="bt-param">
+          Bars
+          <select value={bars} onChange={(e) => setBars(Number(e.target.value))}>
+            {BAR_OPTIONS.map((b) => (
+              <option key={b} value={b}>{b === 5000 ? "Max (5000)" : b}</option>
+            ))}
+          </select>
+        </label>
       </div>
 
       <button className="bt-run" onClick={run} disabled={running}>
@@ -109,6 +118,7 @@ export default function BacktestPanel({ source, symbol, interval, onResult }) {
               <span>Profit factor</span>
               <b>{s.profitFactor === Infinity ? "∞" : s.profitFactor.toFixed(2)}</b>
             </div>
+            <div className="bt-stat"><span>Bars</span><b>{result.equityCurve.length}</b></div>
           </div>
           <EquitySvg curve={result.equityCurve} />
         </>
