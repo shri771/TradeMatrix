@@ -134,8 +134,15 @@ body {
 .pane-cell { min-width: 0; min-height: 0; display: flex; }
 .pane-cell > .pane { flex: 1 1 auto; min-width: 0; }
 
-/* Gutter = invisible hit area; a thin line appears only on hover / active drag. */
-.gutter { background: transparent; z-index: 5; position: relative; }
+/* Gutter = invisible hit area; a thin line appears only on hover / active drag.
+   touch-action:none tells the browser NOT to interpret a finger drag here as a
+   scroll/pinch — without this, mobile/tablet swipes are eaten by the page. */
+.gutter {
+  background: transparent;
+  z-index: 5;
+  position: relative;
+  touch-action: none;
+}
 .gutter-col { cursor: col-resize; }
 .gutter-row { cursor: row-resize; z-index: 6; }
 
@@ -145,10 +152,23 @@ body {
   background: #2f81f7;
   opacity: 0;
   transition: opacity 100ms ease;
+  pointer-events: none; /* the .gutter itself receives events; the line is decoration */
 }
 .gutter-col::before { top: 0; bottom: 0; left: 50%; width: 2px; transform: translateX(-50%); }
 .gutter-row::before { left: 0; right: 0; top: 50%; height: 2px; transform: translateY(-50%); }
 .gutter:hover::before, .gutter.active::before { opacity: 1; }
+
+/* Larger touch hit area without enlarging the visible line. ::after extends the
+   tappable region by 6px on each side (total 18px) on coarse-pointer devices. */
+@media (pointer: coarse) {
+  .gutter::after {
+    content: "";
+    position: absolute;
+    pointer-events: auto;
+  }
+  .gutter-col::after { top: 0; bottom: 0; left: -6px; right: -6px; }
+  .gutter-row::after { left: 0; right: 0; top: -6px; bottom: -6px; }
+}
 
 .pane {
   display: flex;
@@ -354,6 +374,15 @@ body {
   overflow: hidden;
   border-radius: 0 0 8px 8px;
   background: var(--panel);
+  /* Hand every touch gesture (swipe pan, pinch zoom) to KLineChart's own handlers
+     instead of letting the browser interpret them as page scroll / page zoom. */
+  touch-action: none;
+}
+/* touch-action does NOT inherit — set it on every canvas KLineChart paints into,
+   so touchmove on the canvas keeps driving the crosshair instead of being eaten
+   by the browser as a "swipe". */
+.chart-host canvas {
+  touch-action: none;
 }
 
 /* Searchable symbol picker */

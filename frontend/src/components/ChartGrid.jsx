@@ -74,6 +74,9 @@ export default function ChartGrid({ count, panes, sources, onPaneChange }) {
     const rb = b.getBoundingClientRect();
     const pairStart = type === "cols" ? ra.left : ra.top;
     const pairEnd = type === "cols" ? rb.right : rb.bottom;
+    // Pointer capture so finger movement OFF the 6px gutter keeps routing here
+    // (otherwise touch drags drop the moment your finger drifts).
+    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
     dragRef.current = {
       type,
       index,
