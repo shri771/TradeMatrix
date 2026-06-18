@@ -7,12 +7,14 @@ import { useTrading } from "../trading/TradingProvider";
 import { fetchCandles } from "../lib/api";
 import { toKline, INTERVAL_SECONDS } from "../lib/kline";
 import { registerHtfIndicator, HTF_INDICATOR, htfPanelWidth } from "../lib/htfIndicator";
+import { registerPositionOverlays } from "../lib/positionOverlay";
 import TickerBar from "./TickerBar";
 import SymbolSearch from "./SymbolSearch";
 import TradePanel from "./TradePanel";
 import BacktestPanel from "./BacktestPanel";
 
 registerHtfIndicator();
+registerPositionOverlays();
 
 const MAIN_PANE = "candle_pane";
 const MAIN_INDICATORS = ["MA", "EMA", "BOLL"]; // overlaid on the price pane
@@ -32,6 +34,8 @@ const DRAW_TOOLS = [
   { id: "priceLine", label: "Price line" },
   { id: "fibonacciLine", label: "Fibonacci" },
   { id: "rect", label: "Rectangle" },
+  { id: "longPosition", label: "Long position" },
+  { id: "shortPosition", label: "Short position" },
 ];
 
 export default function ChartPane({ paneId, config, sources, onConfigChange }) {
