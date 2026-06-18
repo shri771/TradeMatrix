@@ -3,22 +3,87 @@ import { registerOverlay } from "klinecharts";
 // Long / Short position drawing tools, inspired by TradingView's tools of the
 // same name. Three anchor clicks: entry, stop-loss, take-profit. The overlay
 // paints a green profit zone (entry -> TP) and a red loss zone (entry -> SL)
-// extending to the right edge of the chart, with horizontal lines, price labels,
-// and a Risk:Reward readout.
+// extending to the right edge, with anchored pill labels for each level and a
+// prominent R:R badge near the entry.
 
-const PROFIT_FILL = "rgba(38, 166, 154, 0.18)";
+// ---- Theme ----
+const PROFIT_FILL = "rgba(38, 166, 154, 0.20)";
 const LOSS_FILL = "rgba(239, 83, 80, 0.18)";
-const PROFIT_LINE = "#26a69a";
-const LOSS_LINE = "#ef5350";
-const ENTRY_LINE = "#9aa4ad";
-const LABEL_TEXT = "#dde3ec";
+const PROFIT = "#26a69a";
+const LOSS = "#ef5350";
+const ENTRY = "#aeb6c2";
+const TEXT_ON_COLOR = "#0e1117";
+const NEUTRAL_BG = "#1f2933";
+const NEUTRAL_TEXT = "#dde3ec";
 
+// ---- Helpers ----
 function num(n, p = 2) {
   if (!Number.isFinite(n)) return "—";
   return n.toLocaleString(undefined, { minimumFractionDigits: p, maximumFractionDigits: p });
 }
 
+function signed(n, p = 2) {
+  if (!Number.isFinite(n)) return "—";
+  return (n >= 0 ? "+" : "") + num(n, p);
+}
+
+/** A rounded text-pill (rectText) anchored at the right edge of the chart. */
+function pillRight(xRight, y, text, color, bg, opts = {}) {
+  return {
+    type: "rectText",
+    ignoreEvent: true,
+    attrs: {
+      x: xRight - 6,
+      y,
+      text,
+      align: "right",
+      baseline: "middle",
+    },
+    styles: {
+      color,
+      backgroundColor: bg,
+      borderColor: bg,
+      borderRadius: 4,
+      paddingLeft: 6,
+      paddingRight: 6,
+      paddingTop: 3,
+      paddingBottom: 3,
+      size: 11,
+      weight: opts.bold ? "bold" : "normal",
+    },
+  };
+}
+
+/** A pill anchored at the LEFT of the entry zone — used for the LONG/SHORT badge. */
+function pillLeft(xLeft, y, text, color, bg, opts = {}) {
+  return {
+    type: "rectText",
+    ignoreEvent: true,
+    attrs: {
+      x: xLeft + 4,
+      y,
+      text,
+      align: "left",
+      baseline: opts.baseline ?? "middle",
+    },
+    styles: {
+      color,
+      backgroundColor: bg,
+      borderColor: bg,
+      borderRadius: 4,
+      paddingLeft: 6,
+      paddingRight: 6,
+      paddingTop: 3,
+      paddingBottom: 3,
+      size: opts.size ?? 11,
+      weight: opts.bold ? "bold" : "normal",
+    },
+  };
+}
+
 function makeTemplate(name, sideLabel) {
+  const sideColor = sideLabel === "LONG" ? PROFIT : LOSS;
+
   return {
     name,
     totalStep: 4, // 3 clicks (entry, SL, TP) + finalised state
@@ -27,7 +92,7 @@ function makeTemplate(name, sideLabel) {
     needDefaultYAxisFigure: false,
 
     createPointFigures: ({ coordinates, bounding, overlay }) => {
-      if (coordinates.length < 3) return []; // still being placed
+      if (coordinates.length < 3) return [];
       const [entry, sl, tp] = coordinates;
       const entryPrice = overlay.points[0]?.value ?? 0;
       const slPrice = overlay.points[1]?.value ?? 0;
@@ -37,7 +102,6 @@ function makeTemplate(name, sideLabel) {
       const xRight = bounding.width;
       const rectW = Math.max(0, xRight - xLeft);
 
-      // Profit zone (entry-y to TP-y). Loss zone (entry-y to SL-y).
       const profitTop = Math.min(entry.y, tp.y);
       const profitH = Math.abs(entry.y - tp.y);
       const lossTop = Math.min(entry.y, sl.y);
@@ -49,13 +113,8 @@ function makeTemplate(name, sideLabel) {
       const reward = Math.abs(tpPrice - entryPrice);
       const rr = risk > 0 ? reward / risk : 0;
 
-      const labelX = Math.max(xLeft + 6, xRight - 6);
-      const labelAttrs = (x, y, text, baseline = "middle") => ({
-        x, y, text, baseline, align: "right",
-      });
-
       return [
-        // Filled zones (visual only — don't intercept overlay drag).
+        // --- Filled zones (visual only) ---
         {
           type: "rect",
           ignoreEvent: true,
@@ -68,55 +127,39 @@ function makeTemplate(name, sideLabel) {
           attrs: { x: xLeft, y: lossTop, width: rectW, height: lossH },
           styles: { style: "fill", color: LOSS_FILL },
         },
-        // Horizontal lines at each level (these carry the hit-test for dragging).
+
+        // --- Horizontal lines (these carry the drag hit-test) ---
         {
           type: "line",
           attrs: { coordinates: [{ x: xLeft, y: entry.y }, { x: xRight, y: entry.y }] },
-          styles: { color: ENTRY_LINE, size: 1, style: "dashed", dashedValue: [4, 3] },
+          styles: { color: ENTRY, size: 1, style: "dashed", dashedValue: [4, 3] },
         },
         {
           type: "line",
           attrs: { coordinates: [{ x: xLeft, y: tp.y }, { x: xRight, y: tp.y }] },
-          styles: { color: PROFIT_LINE, size: 1 },
+          styles: { color: PROFIT, size: 1.5 },
         },
         {
           type: "line",
           attrs: { coordinates: [{ x: xLeft, y: sl.y }, { x: xRight, y: sl.y }] },
-          styles: { color: LOSS_LINE, size: 1 },
+          styles: { color: LOSS, size: 1.5 },
         },
-        // Side badge near the entry line.
-        {
-          type: "text",
-          ignoreEvent: true,
-          attrs: { x: xLeft + 4, y: entry.y - 2, text: sideLabel, baseline: "bottom" },
-          styles: { color: sideLabel === "LONG" ? PROFIT_LINE : LOSS_LINE, size: 11, weight: "bold" },
-        },
-        // Per-level labels: price + percentage, anchored to the right edge.
-        {
-          type: "text",
-          ignoreEvent: true,
-          attrs: labelAttrs(labelX, tp.y, `TP ${num(tpPrice)}  ${profitPct >= 0 ? "+" : ""}${num(profitPct)}%`),
-          styles: { color: PROFIT_LINE, size: 11 },
-        },
-        {
-          type: "text",
-          ignoreEvent: true,
-          attrs: labelAttrs(labelX, entry.y, `Entry ${num(entryPrice)}`),
-          styles: { color: LABEL_TEXT, size: 11 },
-        },
-        {
-          type: "text",
-          ignoreEvent: true,
-          attrs: labelAttrs(labelX, sl.y, `SL ${num(slPrice)}  ${lossPct >= 0 ? "+" : ""}${num(lossPct)}%`),
-          styles: { color: LOSS_LINE, size: 11 },
-        },
-        // R:R readout centred between entry and TP for prominence.
-        {
-          type: "text",
-          ignoreEvent: true,
-          attrs: labelAttrs(labelX, (entry.y + tp.y) / 2, `R:R ${num(rr)}`),
-          styles: { color: PROFIT_LINE, size: 12, weight: "bold" },
-        },
+
+        // --- Side badge near entry (top-left of the zone) ---
+        pillLeft(xLeft, entry.y - 14, sideLabel, TEXT_ON_COLOR, sideColor, {
+          bold: true,
+          size: 10,
+        }),
+        // R:R right under the side badge, same x.
+        pillLeft(xLeft, entry.y + 14, `R:R ${num(rr)}`, NEUTRAL_TEXT, NEUTRAL_BG, {
+          bold: true,
+          size: 11,
+        }),
+
+        // --- Right-edge price pills, one per level ---
+        pillRight(xRight, tp.y, `TP ${num(tpPrice)}  ${signed(profitPct)}%`, TEXT_ON_COLOR, PROFIT, { bold: true }),
+        pillRight(xRight, entry.y, `Entry ${num(entryPrice)}`, NEUTRAL_TEXT, NEUTRAL_BG),
+        pillRight(xRight, sl.y, `SL ${num(slPrice)}  ${signed(lossPct)}%`, TEXT_ON_COLOR, LOSS, { bold: true }),
       ];
     },
   };
