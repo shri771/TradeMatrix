@@ -30,12 +30,20 @@ body {
 .toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: nowrap;      /* stay single-row so the chart doesn't lose vertical space */
   gap: 12px;
-  padding: 10px 16px;
+  padding: 8px 16px;
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex: 0 0 auto;
+  overflow-x: auto;       /* if it genuinely can't fit, scroll horizontally instead of growing */
+  overflow-y: hidden;
+  min-width: 0;
 }
+/* Shrinkable siblings so ReplayBar's scrubber gives way first, not by adding a row. */
+.toolbar > * { flex-shrink: 1; min-width: 0; }
+.toolbar h1 { flex-shrink: 0; }         /* keep the title readable */
+.toolbar .count-group { flex-shrink: 0; }
 
 .toolbar h1 {
   font-size: 16px;
@@ -54,6 +62,18 @@ body {
   padding-left: 14px;
   border-left: 1px solid var(--border);
   flex: 1 1 auto;
+  min-width: 0;      /* allow children (scrubber, clock) to shrink instead of pushing width */
+  flex-wrap: nowrap;
+}
+@media (max-width: 1100px) {
+  .replay-bar { margin-left: 0; padding-left: 0; border-left: 0; gap: 4px; }
+  .replay-bar .rb-clock { display: none; }        /* clock is nice-to-have */
+  .replay-bar .rb-label { display: none; }        /* "As of" label — the date input is self-explanatory */
+  .toolbar h1 { display: none; }                  /* title takes ~110px we can spend on controls */
+  .toolbar > label { display: none; }             /* "Number of charts" label — buttons speak for themselves */
+}
+@media (max-width: 700px) {
+  .replay-bar .rb-spd:not(.active) { display: none; }   /* keep only the current speed visible */
 }
 .rb-label { color: var(--muted); font-size: 12px; }
 .rb-btn {
@@ -97,6 +117,53 @@ body {
   min-width: 150px;
   text-align: right;
 }
+
+/* Floating draggable replay bar.
+   When replay mode is on, the bar leaves the toolbar flex flow and hovers over
+   the charts as a pinned panel the user can drag anywhere with the ⋮⋮ handle.
+   Position (left/top) is set inline by React and persists in localStorage. */
+.replay-bar.floating {
+  position: fixed;
+  margin-left: 0;
+  padding: 6px 10px;
+  border-left: 0;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: rgba(22, 27, 34, 0.94);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(6px);
+  z-index: 200;
+  flex: 0 0 auto;
+  max-width: min(680px, calc(100vw - 24px));
+  min-width: 260px;
+  cursor: default;
+  user-select: none;
+}
+/* Inside the floating card the media-query "hide clock / hide label / hide
+   inactive speeds" rules would still fire on a narrow viewport, but here we
+   own our own width, so undo them. */
+.replay-bar.floating .rb-clock,
+.replay-bar.floating .rb-label,
+.replay-bar.floating .rb-spd { display: inline-flex; }
+.replay-bar.floating .rb-clock { display: inline; min-width: 0; }
+.replay-bar.floating .rb-scrub { min-width: 100px; max-width: 220px; }
+
+/* Drag handle: the ⋮⋮ glyph that grabs the whole bar. */
+.rb-handle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 24px;
+  color: var(--muted);
+  font-size: 13px;
+  letter-spacing: -2px;
+  cursor: grab;
+  user-select: none;
+  touch-action: none;   /* let pointer events drive the drag on touch */
+}
+.rb-handle:hover { color: var(--text); }
+.rb-handle:active { cursor: grabbing; }
 
 .toolbar label { color: var(--muted); font-size: 13px; }
 
@@ -220,6 +287,17 @@ body {
 .tool:hover { border-color: #3b434d; }
 .tool.active { background: #2f81f7; border-color: #2f81f7; color: #fff; }
 
+/* Color-code the direct-action position/fibonacci buttons so the toolbar reads
+   at a glance: green ▲ for long, red ▼ for short, amber φ for Fibonacci. */
+.tool.tool-long  { color: var(--up); }
+.tool.tool-short { color: var(--down); }
+.tool.tool-fib   { color: #f0b90b; }
+.tool.tool-trend { color: #2962ff; }
+.tool.tool-long:hover  { border-color: var(--up); }
+.tool.tool-short:hover { border-color: var(--down); }
+.tool.tool-fib:hover   { border-color: #f0b90b; }
+.tool.tool-trend:hover { border-color: #2962ff; }
+
 .menu-wrap { position: relative; }
 
 .tool-menu {
@@ -250,6 +328,36 @@ body {
   white-space: nowrap;
 }
 .menu-item:hover { background: #21262d; }
+
+/* Per-drawing delete list (the ✕ toolbar menu): each drawn tool gets its own row
+   with a delete button, plus a "Clear all" action at the bottom. */
+.menu-item.menu-empty { color: var(--muted); font-style: italic; cursor: default; }
+.menu-item.menu-empty:hover { background: none; }
+.menu-item.draw-row {
+  justify-content: space-between;
+  gap: 10px;
+  cursor: default;
+}
+.draw-label { overflow: hidden; text-overflow: ellipsis; }
+.draw-del {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 1px 4px;
+  border-radius: 4px;
+}
+.draw-del:hover { color: var(--down); background: rgba(239, 83, 80, 0.16); }
+.menu-item.draw-clear {
+  color: var(--down);
+  font-weight: 600;
+  margin-top: 4px;
+  border-top: 1px solid var(--border);
+  border-radius: 0 0 6px 6px;
+}
 
 /* Account summary in the toolbar */
 .account-bar {
@@ -377,7 +485,13 @@ body {
   /* Hand every touch gesture (swipe pan, pinch zoom) to KLineChart's own handlers
      instead of letting the browser interpret them as page scroll / page zoom. */
   touch-action: none;
+  /* Visual cue: chart body is draggable — grab cursor on hover, grabbing on
+     press. Makes it obvious that pan is a click-drag interaction, not a hover
+     interaction. Applied to the whole host so it works even before KLineChart
+     mounts its own canvas. */
+  cursor: grab;
 }
+.chart-host:active { cursor: grabbing; }
 /* touch-action does NOT inherit — set it on every canvas KLineChart paints into,
    so touchmove on the canvas keeps driving the crosshair instead of being eaten
    by the browser as a "swipe". */
@@ -468,4 +582,93 @@ body {
   font-size: 12px;
   padding: 8px;
   text-align: center;
+}
+
+/* Loading indicator — a small pill in the top-left of the chart-host, NOT a
+   full overlay. Databento cold fetches can take 5-30s; a full-cover overlay
+   makes the chart look "not showing" that whole time. This variant leaves the
+   chart canvas fully visible (any stale/previous data or the "HTF …" placeholder
+   stays legible) while still telling the user something is loading. */
+.pane-loading {
+  position: absolute;
+  top: 8px;
+  left: 8px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 10px 4px 8px;
+  background: rgba(22, 27, 34, 0.85);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 11px;
+  pointer-events: none;
+  z-index: 3;
+  animation: pane-loading-fade 0.25s ease-in;
+  max-width: calc(100% - 16px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@keyframes pane-loading-fade {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+.pane-loading-spinner {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  border: 1.5px solid rgba(47, 129, 247, 0.3);
+  border-top-color: #2f81f7;
+  animation: pane-loading-spin 0.9s linear infinite;
+  flex: 0 0 auto;
+}
+@keyframes pane-loading-spin {
+  to { transform: rotate(360deg); }
+}
+.pane-loading-label {
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+  letter-spacing: 0.2px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pane-loading-sub {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+/* Y-axis reset button. Sits inside the chart-host on the right (y-axis) side,
+   just above the x-axis strip. Subtle at rest so it doesn't compete with the
+   chart; brightens on hover. Clicking snaps zoom / scroll / y-autoscale back
+   to the framing the chart had when first opened. */
+.reset-view {
+  position: absolute;
+  right: 8px;
+  bottom: 32px;
+  z-index: 4;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--muted);
+  background: rgba(22, 27, 34, 0.72);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  opacity: 0.65;
+  transition: opacity 120ms ease, color 120ms ease, background 120ms ease, transform 120ms ease;
+}
+.reset-view:hover {
+  opacity: 1;
+  color: var(--text);
+  background: #21262d;
+}
+.reset-view:active {
+  transform: scale(0.94);
 }

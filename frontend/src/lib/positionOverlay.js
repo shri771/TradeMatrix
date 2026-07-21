@@ -15,6 +15,23 @@ const ENTRY = "#aeb6c2";
 const TEXT_ON_COLOR = "#0e1117";
 const NEUTRAL_BG = "#1f2933";
 const NEUTRAL_TEXT = "#dde3ec";
+const RR_GOOD = "#26a69a";   // R:R >= 2 — attractive setup
+const RR_OK = "#f0b90b";     // R:R between 1 and 2 — marginal
+const RR_BAD = "#ef5350";    // R:R < 1 — risking more than the reward
+
+// Overlay IDs currently selected — used to conditionally render the per-overlay
+// delete button. Populated by onSelected / cleared by onDeselected inside the
+// template below. Module-scoped, since the template registers once at module
+// load. Cross-pane clicks flow through the "tm:delete-overlay" DOM event that
+// ChartPane listens for.
+const selectedIds = new Set();
+
+function rrColor(rr) {
+  if (!Number.isFinite(rr) || rr <= 0) return RR_BAD;
+  if (rr >= 2) return RR_GOOD;
+  if (rr >= 1) return RR_OK;
+  return RR_BAD;
+}
 
 // ---- Helpers ----
 function num(n, p = 2) {
@@ -27,10 +44,10 @@ function signed(n, p = 2) {
   return (n >= 0 ? "+" : "") + num(n, p);
 }
 
-/** A rounded text-pill (rectText) anchored at the right edge of the chart. */
+/** A rounded text-pill anchored at the right edge of the chart. */
 function pillRight(xRight, y, text, color, bg, opts = {}) {
   return {
-    type: "rectText",
+    type: "text",
     ignoreEvent: true,
     attrs: {
       x: xRight - 6,
@@ -57,7 +74,7 @@ function pillRight(xRight, y, text, color, bg, opts = {}) {
 /** A pill anchored at the LEFT of the entry zone — used for the LONG/SHORT badge. */
 function pillLeft(xLeft, y, text, color, bg, opts = {}) {
   return {
-    type: "rectText",
+    type: "text",
     ignoreEvent: true,
     attrs: {
       x: xLeft + 4,
@@ -86,20 +103,61 @@ function makeTemplate(name, sideLabel) {
 
   return {
     name,
-    totalStep: 4, // 3 clicks (entry, SL, TP) + finalised state
+    totalStep: 5, // 4 clicks (entry, SL, TP, right-edge) + finalised state
     needDefaultPointFigure: true,
     needDefaultXAxisFigure: false,
     needDefaultYAxisFigure: false,
 
+    // When the user drags the 4th anchor (the right-edge handle) we don't want its
+    // y to matter — it's a horizontal-extent handle. Keep it snapped to the entry
+    // line so it visually looks like a right edge, and only let x change.
+    performEventPressedMove: ({ points, performPointIndex }) => {
+      if (performPointIndex === 3 && points[0] && points[3]) {
+        points[3] = { ...points[3], value: points[0].value };
+      }
+    },
+    performEventMoveForDrawing: ({ currentStep, points, performPoint }) => {
+      // While the user is picking the 4th click, preview it snapped to entry's y.
+      if (currentStep === 4 && points[0]) {
+        return { ...performPoint, value: points[0].value };
+      }
+      return performPoint;
+    },
+
+    onSelected: ({ overlay }) => {
+      selectedIds.add(overlay.id);
+      return false;
+    },
+    onDeselected: ({ overlay }) => {
+      selectedIds.delete(overlay.id);
+      return false;
+    },
+    onClick: ({ figureKey, overlay }) => {
+      if (figureKey === "delete") {
+        try {
+          window.dispatchEvent(new CustomEvent("tm:delete-overlay", { detail: overlay.id }));
+        } catch {}
+        return true;
+      }
+      return false;
+    },
+    onRemoved: ({ overlay }) => {
+      selectedIds.delete(overlay.id);
+      return false;
+    },
+
     createPointFigures: ({ coordinates, bounding, overlay }) => {
       if (coordinates.length < 3) return [];
-      const [entry, sl, tp] = coordinates;
+      const [entry, sl, tp, edge] = coordinates;
       const entryPrice = overlay.points[0]?.value ?? 0;
       const slPrice = overlay.points[1]?.value ?? 0;
       const tpPrice = overlay.points[2]?.value ?? 0;
 
       const xLeft = entry.x;
-      const xRight = bounding.width;
+      // Right edge = the 4th anchor if placed, else the chart edge while user's
+      // still drawing. Also fall back to the chart edge if they dragged it left
+      // of the entry, so the box doesn't invert.
+      const xRight = edge && edge.x > xLeft ? edge.x : bounding.width;
       const rectW = Math.max(0, xRight - xLeft);
 
       const profitTop = Math.min(entry.y, tp.y);
@@ -113,7 +171,38 @@ function makeTemplate(name, sideLabel) {
       const reward = Math.abs(tpPrice - entryPrice);
       const rr = risk > 0 ? reward / risk : 0;
 
+      // Per-overlay delete pill — visible only while this overlay is selected.
+      // Sits just above the highest of entry/tp/sl at the right edge, so it
+      // doesn't fight the price pills for space. Clicking it fires the global
+      // "tm:delete-overlay" event that ChartPane routes back to the chart.
+      const showDelete = selectedIds.has(overlay.id);
+      const topY = Math.min(entry.y, tp.y, sl.y);
+      const deleteFig = showDelete ? [{
+        type: "text",
+        key: "delete",
+        attrs: {
+          x: xRight - 6,
+          y: topY - 16,
+          text: "×",
+          align: "right",
+          baseline: "middle",
+        },
+        styles: {
+          color: "#ffffff",
+          backgroundColor: "#ef5350",
+          borderColor: "#ef5350",
+          borderRadius: 10,
+          paddingLeft: 7,
+          paddingRight: 7,
+          paddingTop: 2,
+          paddingBottom: 2,
+          size: 13,
+          weight: "bold",
+        },
+      }] : [];
+
       return [
+        ...deleteFig,
         // --- Filled zones (visual only) ---
         {
           type: "rect",
@@ -150,16 +239,38 @@ function makeTemplate(name, sideLabel) {
           bold: true,
           size: 10,
         }),
-        // R:R right under the side badge, same x.
-        pillLeft(xLeft, entry.y + 14, `R:R ${num(rr)}`, NEUTRAL_TEXT, NEUTRAL_BG, {
-          bold: true,
-          size: 11,
-        }),
+        // Small R:R badge right under the side badge, attached to the tool.
+        // Colour-coded: green ≥ 2 (attractive), amber 1..2 (marginal), red < 1
+        // (bad). "1:X" is the traditional trader shorthand (risk 1 to make X).
+        pillLeft(
+          xLeft,
+          entry.y + 12,
+          `R:R 1:${num(rr, rr >= 10 ? 1 : 2)}`,
+          TEXT_ON_COLOR,
+          rrColor(rr),
+          { bold: true, size: 9 }
+        ),
 
         // --- Right-edge price pills, one per level ---
-        pillRight(xRight, tp.y, `TP ${num(tpPrice)}  ${signed(profitPct)}%`, TEXT_ON_COLOR, PROFIT, { bold: true }),
+        // "+2.50R" and "-1R" — the R-multiple is the trader-native way of
+        // expressing move size relative to the position's own risk.
+        pillRight(
+          xRight,
+          tp.y,
+          `TP ${num(tpPrice)}  ${signed(profitPct)}%  ·  +${num(rr)}R`,
+          TEXT_ON_COLOR,
+          PROFIT,
+          { bold: true }
+        ),
         pillRight(xRight, entry.y, `Entry ${num(entryPrice)}`, NEUTRAL_TEXT, NEUTRAL_BG),
-        pillRight(xRight, sl.y, `SL ${num(slPrice)}  ${signed(lossPct)}%`, TEXT_ON_COLOR, LOSS, { bold: true }),
+        pillRight(
+          xRight,
+          sl.y,
+          `SL ${num(slPrice)}  ${signed(lossPct)}%  ·  -1R`,
+          TEXT_ON_COLOR,
+          LOSS,
+          { bold: true }
+        ),
       ];
     },
   };

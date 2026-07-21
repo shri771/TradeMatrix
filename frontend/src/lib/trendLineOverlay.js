@@ -1,0 +1,58 @@
+import { registerOverlay } from "klinecharts";
+
+// Horizontal "trend line" — a bounded segment that is locked to the PRICE of the
+// first click, so it stays perfectly level (180°) no matter where the second
+// click lands. Two clicks: the first anchors the price + start, the second only
+// sets how far the line runs (its length / end time).
+//
+// This is distinct from the full-width Horizontal line tool: this one is bounded
+// to a time span, so you can mark support/resistance over a specific window.
+
+const COLOR = "#2962ff"; // klinecharts default overlay blue
+
+let registered = false;
+export function registerTrendLineOverlay() {
+  if (registered) return;
+  registered = true;
+  registerOverlay({
+    name: "trendLine",
+    totalStep: 3, // click 1 (anchor) + click 2 (length) + finalised
+    needDefaultPointFigure: true,
+    needDefaultXAxisFigure: true,
+    needDefaultYAxisFigure: true,
+
+    // While placing the 2nd point, preview it snapped to the anchor's price so
+    // the rubber-band line stays level as the cursor moves.
+    performEventMoveForDrawing: ({ currentStep, points, performPoint }) => {
+      if (currentStep === 2 && points[0]) {
+        return { ...performPoint, value: points[0].value };
+      }
+      return performPoint;
+    },
+
+    // After it's drawn, keep it level when an endpoint is dragged: dragging the
+    // 2nd point changes only its time; dragging the anchor moves the whole line
+    // to a new price and takes the 2nd point with it.
+    performEventPressedMove: ({ points, performPointIndex }) => {
+      if (performPointIndex === 1 && points[0]) {
+        points[1] = { ...points[1], value: points[0].value };
+      } else if (performPointIndex === 0 && points[1]) {
+        points[1] = { ...points[1], value: points[0].value };
+      }
+    },
+
+    createPointFigures: ({ coordinates }) => {
+      if (coordinates.length < 2) return [];
+      const [p1, p2] = coordinates;
+      // Draw both ends at p1's y so the segment is perfectly level even if the
+      // two anchors drift a sub-pixel apart.
+      return [
+        {
+          type: "line",
+          attrs: { coordinates: [{ x: p1.x, y: p1.y }, { x: p2.x, y: p1.y }] },
+          styles: { color: COLOR, size: 1 },
+        },
+      ];
+    },
+  });
+}

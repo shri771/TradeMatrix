@@ -57,16 +57,21 @@ export function ReplayProvider({ children }) {
     if (m === "replay") setClock(null);
   }, []);
 
-  // Seat the clock 25% into the window; re-seat when the range changes (panes load
-  // asynchronously) or if it drifts outside the current range.
+  // Seat the clock, re-seating whenever the range changes (panes load asynchronously)
+  // or the clock drifts outside it. Always land near the END of the window (~99%)
+  // so entering replay LOOKS like the live view — same latest bars visible, chart
+  // doesn't feel "reset". If the user wants to review a specific past period, they
+  // drag the scrubber back OR pick an "As of" date (which lands near the end of
+  // THAT window, not the current one). Rewinding is what the scrubber and step-
+  // back controls are for; play just walks forward from wherever the clock is.
   useEffect(() => {
     if (mode !== "replay" || !range) return;
     setClock((c) =>
       c == null || c < range.start || c > range.end
-        ? Math.round(range.start + (range.end - range.start) * 0.25)
+        ? Math.round(range.start + (range.end - range.start) * 0.99)
         : c
     );
-  }, [mode, range]);
+  }, [mode, range, endTs]);
 
   useEffect(() => {
     if (!playing || mode !== "replay" || !range) return;

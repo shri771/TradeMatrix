@@ -9,6 +9,12 @@ function defaultParams(key) {
   return Object.fromEntries(STRATEGIES[key].params.map((p) => [p.key, p.default]));
 }
 
+// "YYYY-MM-DD" from the <input type=date>  <->  unix seconds.
+function dateInputToTs(v) {
+  if (!v) return null;
+  return Math.floor(new Date(v + "T23:59:59Z").getTime() / 1000);
+}
+
 function EquitySvg({ curve }) {
   if (curve.length < 2) return null;
   const vals = curve.map((d) => d.equity);
@@ -35,6 +41,7 @@ export default function BacktestPanel({ source, symbol, interval, onResult }) {
   const [key, setKey] = useState("smaCross");
   const [params, setParams] = useState(() => defaultParams("smaCross"));
   const [bars, setBars] = useState(5000); // default to the max window
+  const [asOf, setAsOf] = useState(""); // "YYYY-MM-DD" — blank = latest
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -50,8 +57,13 @@ export default function BacktestPanel({ source, symbol, interval, onResult }) {
     setRunning(true);
     setError(null);
     try {
-      const cs = await fetchCandles(source, symbol, interval, bars);
-      if (cs.length < 30) throw new Error("not enough history");
+      const end = dateInputToTs(asOf); // null when blank → latest
+      const cs = await fetchCandles(source, symbol, interval, bars, end);
+      if (cs.length < 30) {
+        throw new Error(asOf
+          ? `not enough history ending ${asOf} — try earlier or a coarser interval`
+          : "not enough history");
+      }
       const r = runBacktest(cs, (candles) => strat.signal(candles, params), {
         allowShort: strat.allowShort,
       });
@@ -96,10 +108,19 @@ export default function BacktestPanel({ source, symbol, interval, onResult }) {
             ))}
           </select>
         </label>
+        <label className="bt-param">
+          As of
+          <input
+            type="date"
+            value={asOf}
+            onChange={(e) => setAsOf(e.target.value)}
+            title="Backtest ends on this date (blank = latest)"
+          />
+        </label>
       </div>
 
       <button className="bt-run" onClick={run} disabled={running}>
-        {running ? "Running…" : `Run on ${symbol} ${interval}`}
+        {running ? "Running…" : `Run on ${symbol} ${interval}${asOf ? ` @ ${asOf}` : ""}`}
       </button>
 
       {error && <div className="bt-error">{error}</div>}

@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import datetime
 import logging
 import os
+import pickle
+import tempfile
+import threading
+from pathlib import Path
 from typing import AsyncIterator
 
 import databento as db
@@ -14,11 +19,27 @@ from sources.base import DataSource
 
 _log = logging.getLogger("databento_source")
 _log.setLevel(logging.INFO)
+if not _log.handlers:
+    _handler = logging.StreamHandler()
+    _handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
+    _log.addHandler(_handler)
+    _log.propagate = False
 
-# Minimum lookback for intraday windows. Futures sessions span weekends/holidays
-# (a Memorial Day weekend = ~72h of no trading), so a tight window can legitimately
-# return zero bars. 14d guarantees we catch the most recent session for any limit.
-_INTRADAY_MIN_WINDOW = 14 * 86400
+# Minimum lookback for intraday windows: enough to survive a long-weekend/holiday
+# gap on the front month without being so wide that Databento has to return orders
+# of magnitude more raw rows than the caller asked for.
+_INTRADAY_MIN_WINDOW = 4 * 86400
+
+# Path where the fetched-window cache is persisted across restarts. Small win in
+# dev (survives auto-reload); big win in production (survives redeploy).
+_CACHE_PATH = Path(os.environ.get("TRADEMATRIX_CACHE_DIR", "~/.cache/tradematrix")).expanduser() / "databento.pkl"
+_CACHE_MAX_ENTRIES = 512
+
+# For resampled intervals we canonicalise the underlying fetch to a single "envelope"
+# window per native schema, so 3m/5m/15m/30m all share one cached `ohlcv-1m` fetch
+# (and 4h shares one cached `ohlcv-1h`). Days chosen to cover the largest resampled
+# interval at limit=1500 with room for weekends.
+_ENVELOPE_DAYS = {"ohlcv-1m": 40, "ohlcv-1h": 400}
 
 # Canonical interval -> (Databento native OHLCV schema, resample rule | None, seconds).
 # Databento's native OHLCV schemas are 1m / 1h / 1d only; everything else resamples.
@@ -62,6 +83,62 @@ class DatabentoSource(DataSource):
         # Clamping both bounds prevents 422s when callers request a window that
         # extends past the available data on either side.
         self._dataset_range_cache: dict[str, tuple[float, int, int]] = {}
+        # In-flight coalescing: when N callers ask for the same key at once, the
+        # second..Nth `await` the first caller's Future instead of firing new
+        # Databento requests.
+        self._inflight: dict[tuple[str, str, int, int], asyncio.Future] = {}
+        # Load anything a previous process left on disk, then arrange to write it
+        # back on shutdown. Failure to load a stale/corrupt file is harmless.
+        self._cache_lock = threading.Lock()
+        self._dirty = False
+        self._load_cache_from_disk()
+        atexit.register(self._save_cache_to_disk)
+        # Also autosave periodically so abrupt kills (SIGTERM, uvicorn --reload)
+        # don't drop everything.
+        self._autosave = threading.Thread(target=self._autosave_loop, daemon=True)
+        self._autosave.start()
+
+    def _autosave_loop(self) -> None:
+        import time
+        while True:
+            time.sleep(300)  # 5 min
+            if self._dirty:
+                self._save_cache_to_disk()
+
+    def _load_cache_from_disk(self) -> None:
+        try:
+            with _CACHE_PATH.open("rb") as fh:
+                data = pickle.load(fh)
+            if isinstance(data, dict):
+                self._cache.update(data)
+                _log.info("DBN cache loaded from disk: %d entries", len(self._cache))
+        except FileNotFoundError:
+            pass
+        except Exception as exc:
+            _log.warning("DBN cache load failed (%s): %s", type(exc).__name__, exc)
+
+    def _save_cache_to_disk(self) -> None:
+        if not self._dirty:
+            return
+        try:
+            _CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            # Write to a tempfile then rename so a crash mid-write doesn't leave
+            # a truncated file behind for next boot.
+            with self._cache_lock:
+                snapshot = dict(self._cache)
+            fd, tmp = tempfile.mkstemp(prefix="databento.", dir=_CACHE_PATH.parent)
+            try:
+                with os.fdopen(fd, "wb") as fh:
+                    pickle.dump(snapshot, fh, protocol=pickle.HIGHEST_PROTOCOL)
+                os.replace(tmp, _CACHE_PATH)
+            except Exception:
+                try: os.unlink(tmp)
+                except FileNotFoundError: pass
+                raise
+            self._dirty = False
+            _log.info("DBN cache saved to disk: %d entries", len(snapshot))
+        except Exception as exc:
+            _log.warning("DBN cache save failed (%s): %s", type(exc).__name__, exc)
 
     def _dataset_range(self, schema: str) -> tuple[int, int]:
         import time
@@ -96,26 +173,61 @@ class DatabentoSource(DataSource):
             if q in s["symbol"].upper() or q in s["name"].upper()
         ]
 
+    async def _fetch_window_coalesced(
+        self, symbol: str, schema: str, start_s: int, end_s: int
+    ) -> list[Candle]:
+        """Async front-door around `_fetch_window` that dedupes concurrent duplicates."""
+        key = (symbol, schema, start_s, end_s)
+        # Fast path: already cached, skip the Databento thread hop.
+        cached = self._cache.get(key)
+        if cached is not None:
+            return cached
+        inflight = self._inflight.get(key)
+        if inflight is not None:
+            # Someone else is already fetching this window — piggyback on their result.
+            return await inflight
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future = loop.create_future()
+        self._inflight[key] = fut
+        try:
+            candles = await asyncio.to_thread(self._fetch_window, symbol, schema, start_s, end_s)
+            fut.set_result(candles)
+            return candles
+        except Exception as exc:
+            fut.set_exception(exc)
+            raise
+        finally:
+            self._inflight.pop(key, None)
+
     def _fetch_window(self, symbol: str, schema: str, start_s: int, end_s: int) -> list[Candle]:
         """Pull a (symbol, schema, [start, end]) window from Databento. Cached."""
+        import time as _time
+        t0 = _time.monotonic()
         if self._client is None:
             return []
         # Clamp [start, end] to what the dataset actually has available so requesting
         # more history than exists returns whatever's there instead of 422-ing.
         available_start, available_end = self._dataset_range(schema)
+        t_meta = _time.monotonic() - t0
         if end_s > available_end:
             end_s = available_end - 60
         if start_s < available_start:
             start_s = available_start
         if start_s >= end_s:
             return []
+        win_days = (end_s - start_s) / 86400
         key = (symbol, schema, start_s, end_s)
         cached = self._cache.get(key)
         if cached is not None:
+            _log.info(
+                "DBN[%s %s win=%.1fd cache=HIT] rows=%d -> %.3fs",
+                symbol, schema, win_days, len(cached), _time.monotonic() - t0,
+            )
             return cached
         try:
             start = datetime.datetime.fromtimestamp(start_s, datetime.timezone.utc)
             end = datetime.datetime.fromtimestamp(end_s, datetime.timezone.utc)
+            t_api0 = _time.monotonic()
             data = self._client.timeseries.get_range(
                 dataset="GLBX.MDP3",
                 symbols=[symbol],
@@ -124,9 +236,17 @@ class DatabentoSource(DataSource):
                 end=end,
                 stype_in="continuous",
             )
+            t_api = _time.monotonic() - t_api0
+            t_df0 = _time.monotonic()
             df = data.to_df()
+            t_df = _time.monotonic() - t_df0
             if df.empty:
+                _log.info(
+                    "DBN[%s %s win=%.1fd cache=MISS] meta=%.3f api=%.3f to_df=%.3f rows=0 -> %.3fs",
+                    symbol, schema, win_days, t_meta, t_api, t_df, _time.monotonic() - t0,
+                )
                 return []
+            t_conv0 = _time.monotonic()
             candles = [
                 Candle(
                     time=int(ts.timestamp()),
@@ -138,6 +258,12 @@ class DatabentoSource(DataSource):
                 )
                 for ts, row in df.iterrows()
             ]
+            t_conv = _time.monotonic() - t_conv0
+            _log.info(
+                "DBN[%s %s win=%.1fd cache=MISS] meta=%.3f api=%.3f to_df=%.3f conv=%.3f rows=%d -> %.3fs",
+                symbol, schema, win_days, t_meta, t_api, t_df, t_conv, len(candles),
+                _time.monotonic() - t0,
+            )
         except Exception as exc:
             _log.error(
                 "Databento fetch failed: symbol=%s schema=%s window=[%s, %s] err=%s: %s",
@@ -148,10 +274,13 @@ class DatabentoSource(DataSource):
             )
             return []
         # Bounded cache (drop the oldest half when full — insertion-ordered).
-        self._cache[key] = candles
-        if len(self._cache) > 256:
-            for k in list(self._cache.keys())[:128]:
-                del self._cache[k]
+        with self._cache_lock:
+            self._cache[key] = candles
+            if len(self._cache) > _CACHE_MAX_ENTRIES:
+                # drop the oldest half
+                for k in list(self._cache.keys())[: _CACHE_MAX_ENTRIES // 2]:
+                    del self._cache[k]
+        self._dirty = True
         return candles
 
     async def get_candles(
@@ -164,18 +293,31 @@ class DatabentoSource(DataSource):
         if end is not None:
             end_s = end
         else:
-            # Databento's historical feed lags real time by a few minutes; requesting
-            # `end=now` triggers a 422 (data_end_after_available_end). 15-minute
-            # clamp comfortably covers the observed lag for OHLCV on GLBX.MDP3.
+            # Databento's historical feed lags real time; requesting `end=now`
+            # triggers 422 (data_end_after_available_end). 15-min clamp covers it.
             end_s = int(datetime.datetime.now(datetime.timezone.utc).timestamp()) - 900
-        # Buffer for weekends/closed sessions + resampling slack.
-        buffer = 1.6 if rule is None else 2.0
-        wanted = int(sec * limit * buffer)
-        # For intraday, ensure the window is wide enough to span any holiday weekend.
-        window = max(wanted, _INTRADAY_MIN_WINDOW) if sec < 86400 else wanted + 86400
+        # Quantize end_s so "give me the latest 1500 bars" requests fired seconds
+        # apart share a cache key (Databento is our expensive dependency — cache HIT
+        # returns in ~microseconds). For resampled intervals we quantize to the
+        # SCHEMA's granularity, not the interval, so 3m/5m/15m/30m collapse onto
+        # the same cache key.
+        if rule and schema in _ENVELOPE_DAYS:
+            # Envelope path: all resampled intervals sharing this schema request
+            # the SAME window, so exactly one Databento call warms them all.
+            envelope_bucket = 60 if schema == "ohlcv-1m" else 3600
+            end_s = (end_s // envelope_bucket) * envelope_bucket
+            window = _ENVELOPE_DAYS[schema] * 86400
+        else:
+            bucket = max(60, sec)
+            end_s = (end_s // bucket) * bucket
+            # CME futures trade ~23h/day, so gaps beyond weekends are rare. Tight
+            # buffer keeps payloads small.
+            buffer = 1.2
+            wanted = int(sec * limit * buffer)
+            window = max(wanted, _INTRADAY_MIN_WINDOW) if sec < 86400 else wanted + 86400
         start_s = end_s - window
 
-        candles = await asyncio.to_thread(self._fetch_window, symbol, schema, start_s, end_s)
+        candles = await self._fetch_window_coalesced(symbol, schema, start_s, end_s)
 
         if rule and candles:
             df = pd.DataFrame(
