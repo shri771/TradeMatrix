@@ -3,17 +3,21 @@ import { fetchCandles } from "../lib/api";
 import { toKline, INTERVAL_SECONDS } from "../lib/kline";
 import { useReplay } from "../replay/ReplayProvider";
 
-// Replay loads a fixed TIME window (not a fixed bar count) per pane, so every
-// timeframe spans the SAME period. That keeps the global replay clock valid when
-// you switch timeframes — a 4h chart and a 15m chart then replay the exact same
-// dates instead of drifting apart (a fixed bar count made 4h span ~250 days and
-// 15m only ~16 days). Capped at the backend max so fine intervals stay in one
-// request; intervals finer than the cap allows simply cover less history.
-const REPLAY_WINDOW_SEC = 45 * 86400; // ~45 days
-const MAX_REPLAY_BARS = 5000;
+// Replay coordinates every timeframe to the same REPLAY CLOCK window (a fixed
+// duration), so switching timeframes keeps the exact same dates instead of
+// drifting apart (a fixed bar count made 4h span ~250 days but 15m only ~16).
+// But the clock window alone is too few bars for coarse timeframes (45 days = 45
+// daily candles → a nearly empty daily chart), so we LOAD at least MIN_REPLAY_BARS
+// for chart context and separately CLAMP the clock's range to the window (see
+// registerPane below). Coarse timeframes thus show plenty of history on the left
+// while the replayable/coordinated span stays consistent.
+const REPLAY_WINDOW_SEC = 45 * 86400; // ~45 days — the coordinated clock range
+const MAX_REPLAY_BARS = 5000;         // backend per-request cap
+const MIN_REPLAY_BARS = 300;          // floor so coarse timeframes still fill the chart
 export function replayLimit(interval) {
   const sec = INTERVAL_SECONDS[interval] || 60;
-  return Math.min(MAX_REPLAY_BARS, Math.ceil(REPLAY_WINDOW_SEC / sec));
+  const forWindow = Math.ceil(REPLAY_WINDOW_SEC / sec);
+  return Math.min(MAX_REPLAY_BARS, Math.max(MIN_REPLAY_BARS, forWindow));
 }
 
 /**
@@ -38,9 +42,14 @@ export function useReplayData({ paneId, source, symbol, interval, enabled, chart
         dataRef.current = cs;
         renderedRef.current = 0;
         if (cs.length) {
+          // Clamp the clock's start to the coordinated window even when we loaded
+          // extra history for context, so every timeframe's replayable range is the
+          // same span (keeping timeframes in sync) while the chart still shows the
+          // older bars on the left.
+          const endRef = endTs ?? cs[cs.length - 1].time;
           registerPane(paneId, {
             interval,
-            minTime: cs[0].time,
+            minTime: Math.max(cs[0].time, endRef - REPLAY_WINDOW_SEC),
             maxTime: cs[cs.length - 1].time,
           });
         }
