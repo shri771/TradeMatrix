@@ -683,11 +683,15 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready]);
 
-  // Overlays are anchored to specific times/prices; reset on instrument change.
+  // Overlays are anchored to specific times/prices, so reset them when the
+  // INSTRUMENT changes (a different symbol's price levels are meaningless). Do
+  // NOT clear on a timeframe switch: a trendline drawn on 1h is still valid on
+  // 15m/4h of the same instrument — klinecharts re-anchors overlays by their
+  // timestamp+price, so they carry across timeframes (and through replay).
   useEffect(() => {
     clearDrawings();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [config.source, config.symbol, config.interval]);
+  }, [config.source, config.symbol]);
 
   const toggleIndicator = (name) => {
     const next = indicators.includes(name)
