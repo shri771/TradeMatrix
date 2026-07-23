@@ -45,8 +45,12 @@ export function registerFibonacciOverlay() {
     // so the user only has to think about "how far right".
     totalStep: 4,
     needDefaultPointFigure: true,
-    needDefaultXAxisFigure: true,
-    needDefaultYAxisFigure: true,
+    // No default axis figures — they draw full-width/height reference lines at the
+    // anchors that linger as stray "infinite" lines when the bounded overlay
+    // scrolls off-screen on a finer timeframe. The fib levels are drawn bounded by
+    // createPointFigures below.
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
 
     // Post-draw drag: keep the right-edge handle horizontally free but locked
     // vertically to p1's price. Without this, dragging the handle drifts the

@@ -18,8 +18,12 @@ export function registerTrendLineOverlay() {
     name: "trendLine",
     totalStep: 3, // click 1 (anchor) + click 2 (length) + finalised
     needDefaultPointFigure: true,
-    needDefaultXAxisFigure: true,
-    needDefaultYAxisFigure: true,
+    // No default axis figures: they draw a FULL-WIDTH price line (and full-height
+    // time line) at each anchor. On a finer timeframe where the bounded segment
+    // scrolls off-screen, that stray full-width line is all that's left — it reads
+    // as the trend line "extending to infinity". We only want the bounded segment.
+    needDefaultXAxisFigure: false,
+    needDefaultYAxisFigure: false,
 
     // While placing the 2nd point, preview it snapped to the anchor's price so
     // the rubber-band line stays level as the cursor moves.
