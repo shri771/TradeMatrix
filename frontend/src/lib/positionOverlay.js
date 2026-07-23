@@ -3,8 +3,9 @@ import { registerOverlay } from "klinecharts";
 // Long / Short position drawing tools, inspired by TradingView's tools of the
 // same name. Three anchor clicks: entry, stop-loss, take-profit. The overlay
 // paints a green profit zone (entry -> TP) and a red loss zone (entry -> SL)
-// extending to the right edge, with anchored pill labels for each level and a
-// prominent R:R badge near the entry.
+// extending to the right edge. The only label is the overall risk:reward badge
+// near the entry — everything else (per-level prices, %s, R-multiples) is left
+// off deliberately to keep the tool uncluttered.
 
 // ---- Theme ----
 const PROFIT_FILL = "rgba(38, 166, 154, 0.20)";
@@ -13,8 +14,6 @@ const PROFIT = "#26a69a";
 const LOSS = "#ef5350";
 const ENTRY = "#aeb6c2";
 const TEXT_ON_COLOR = "#0e1117";
-const NEUTRAL_BG = "#1f2933";
-const NEUTRAL_TEXT = "#dde3ec";
 const RR_GOOD = "#26a69a";   // R:R >= 2 — attractive setup
 const RR_OK = "#f0b90b";     // R:R between 1 and 2 — marginal
 const RR_BAD = "#ef5350";    // R:R < 1 — risking more than the reward
@@ -39,39 +38,7 @@ function num(n, p = 2) {
   return n.toLocaleString(undefined, { minimumFractionDigits: p, maximumFractionDigits: p });
 }
 
-function signed(n, p = 2) {
-  if (!Number.isFinite(n)) return "—";
-  return (n >= 0 ? "+" : "") + num(n, p);
-}
-
-/** A rounded text-pill anchored at the right edge of the chart. */
-function pillRight(xRight, y, text, color, bg, opts = {}) {
-  return {
-    type: "text",
-    ignoreEvent: true,
-    attrs: {
-      x: xRight - 6,
-      y,
-      text,
-      align: "right",
-      baseline: "middle",
-    },
-    styles: {
-      color,
-      backgroundColor: bg,
-      borderColor: bg,
-      borderRadius: 4,
-      paddingLeft: 6,
-      paddingRight: 6,
-      paddingTop: 3,
-      paddingBottom: 3,
-      size: 11,
-      weight: opts.bold ? "bold" : "normal",
-    },
-  };
-}
-
-/** A pill anchored at the LEFT of the entry zone — used for the LONG/SHORT badge. */
+/** A pill anchored at the LEFT of the entry zone — used for the R:R badge. */
 function pillLeft(xLeft, y, text, color, bg, opts = {}) {
   return {
     type: "text",
@@ -98,9 +65,7 @@ function pillLeft(xLeft, y, text, color, bg, opts = {}) {
   };
 }
 
-function makeTemplate(name, sideLabel) {
-  const sideColor = sideLabel === "LONG" ? PROFIT : LOSS;
-
+function makeTemplate(name) {
   return {
     name,
     totalStep: 5, // 4 clicks (entry, SL, TP, right-edge) + finalised state
@@ -165,16 +130,14 @@ function makeTemplate(name, sideLabel) {
       const lossTop = Math.min(entry.y, sl.y);
       const lossH = Math.abs(entry.y - sl.y);
 
-      const profitPct = entryPrice ? ((tpPrice - entryPrice) / entryPrice) * 100 : 0;
-      const lossPct = entryPrice ? ((slPrice - entryPrice) / entryPrice) * 100 : 0;
       const risk = Math.abs(entryPrice - slPrice);
       const reward = Math.abs(tpPrice - entryPrice);
       const rr = risk > 0 ? reward / risk : 0;
 
       // Per-overlay delete pill — visible only while this overlay is selected.
-      // Sits just above the highest of entry/tp/sl at the right edge, so it
-      // doesn't fight the price pills for space. Clicking it fires the global
-      // "tm:delete-overlay" event that ChartPane routes back to the chart.
+      // Sits just above the highest of entry/tp/sl at the right edge. Clicking it
+      // fires the global "tm:delete-overlay" event that ChartPane routes back to
+      // the chart.
       const showDelete = selectedIds.has(overlay.id);
       const topY = Math.min(entry.y, tp.y, sl.y);
       const deleteFig = showDelete ? [{
@@ -234,42 +197,16 @@ function makeTemplate(name, sideLabel) {
           styles: { color: LOSS, size: 1.5 },
         },
 
-        // --- Side badge near entry (top-left of the zone) ---
-        pillLeft(xLeft, entry.y - 14, sideLabel, TEXT_ON_COLOR, sideColor, {
-          bold: true,
-          size: 10,
-        }),
-        // Small R:R badge right under the side badge, attached to the tool.
+        // --- Overall risk:reward badge (the only label) ---
         // Colour-coded: green ≥ 2 (attractive), amber 1..2 (marginal), red < 1
         // (bad). "1:X" is the traditional trader shorthand (risk 1 to make X).
         pillLeft(
           xLeft,
-          entry.y + 12,
+          entry.y,
           `R:R 1:${num(rr, rr >= 10 ? 1 : 2)}`,
           TEXT_ON_COLOR,
           rrColor(rr),
-          { bold: true, size: 9 }
-        ),
-
-        // --- Right-edge price pills, one per level ---
-        // "+2.50R" and "-1R" — the R-multiple is the trader-native way of
-        // expressing move size relative to the position's own risk.
-        pillRight(
-          xRight,
-          tp.y,
-          `TP ${num(tpPrice)}  ${signed(profitPct)}%  ·  +${num(rr)}R`,
-          TEXT_ON_COLOR,
-          PROFIT,
-          { bold: true }
-        ),
-        pillRight(xRight, entry.y, `Entry ${num(entryPrice)}`, NEUTRAL_TEXT, NEUTRAL_BG),
-        pillRight(
-          xRight,
-          sl.y,
-          `SL ${num(slPrice)}  ${signed(lossPct)}%  ·  -1R`,
-          TEXT_ON_COLOR,
-          LOSS,
-          { bold: true }
+          { bold: true, size: 11 }
         ),
       ];
     },
@@ -280,6 +217,6 @@ let registered = false;
 export function registerPositionOverlays() {
   if (registered) return;
   registered = true;
-  registerOverlay(makeTemplate("longPosition", "LONG"));
-  registerOverlay(makeTemplate("shortPosition", "SHORT"));
+  registerOverlay(makeTemplate("longPosition"));
+  registerOverlay(makeTemplate("shortPosition"));
 }
