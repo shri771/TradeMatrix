@@ -1,7 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import { useChart } from "../hooks/useChart";
 import { useCandleStream } from "../hooks/useCandleStream";
-import { useReplayData } from "../hooks/useReplayData";
+import { useReplayData, replayLimit } from "../hooks/useReplayData";
 import { useReplay } from "../replay/ReplayProvider";
 import { useTrading } from "../trading/TradingProvider";
 import { fetchCandles } from "../lib/api";
@@ -99,6 +99,12 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
   // blanking them while every timeframe re-fetches, and lets a slow/failed refetch
   // fall back to the previous candles rather than vanishing.
   const htfCacheRef = useRef(new Map());
+  // Replay only: fetched windows for HTFs FINER than the main timeframe, which
+  // can't be aggregated from the coarser main candles (e.g. 30m/1h on a 1d chart).
+  // Keyed by `${source}|${symbol}|${htf}`; the version bumps when a fetch lands so
+  // the clock-driven reveal re-runs.
+  const replayHtfFetchRef = useRef(new Map());
+  const [replayHtfVersion, setReplayHtfVersion] = useState(0);
 
   const isReplay = mode === "replay";
   const indicators = (config.indicators ?? []).filter((x) => typeof x === "string");
@@ -367,8 +373,23 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     if (!chart || !ready || !isReplay || !htfs.length) return;
     const mainData = chart.getDataList();
     if (!mainData || !mainData.length) return;
+    const mainSec = INTERVAL_SECONDS[config.interval] || 60;
     const groups = htfs.map((htf) => {
-      const bucketMs = (INTERVAL_SECONDS[htf] || 1800) * 1000;
+      const htfSec = INTERVAL_SECONDS[htf] || 1800;
+      // HTF FINER than the main timeframe can't be built by aggregating the
+      // coarser main candles (they'd collapse to the main candles). Use the
+      // separately-fetched real HTF window instead, revealing only candles that
+      // have fully CLOSED at/before the clock (no future leak).
+      if (htfSec < mainSec) {
+        const win = replayHtfFetchRef.current.get(`${config.source}|${config.symbol}|${htf}`) || [];
+        const candles = [];
+        for (const c of win) {
+          if (clock != null && c.time + htfSec > clock) break; // not yet closed
+          candles.push(toHtf(c));
+        }
+        return { htf, candles: candles.slice(-HTF_COUNT) };
+      }
+      const bucketMs = htfSec * 1000;
       const buckets = new Map(); // bucketStartMs -> aggregated HTF candle
       for (const c of mainData) {
         const ts = c.timestamp;
@@ -387,7 +408,31 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     });
     try { chart.overrideIndicator({ name: HTF_INDICATOR, extendData: { groups } }, MAIN_PANE); } catch {}
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, isReplay, htfKey, clock]);
+  }, [ready, isReplay, htfKey, clock, config.interval, replayHtfVersion]);
+
+  // In replay, fetch the real candles for any HTF finer than the main timeframe
+  // (they can't be aggregated from the coarser main data). One window per htf,
+  // "as of" the replay date; the reveal above slices it to the clock.
+  useEffect(() => {
+    if (!ready || !isReplay || !htfs.length) return;
+    let cancelled = false;
+    const mainSec = INTERVAL_SECONDS[config.interval] || 60;
+    const finer = htfs.filter((htf) => (INTERVAL_SECONDS[htf] || 1800) < mainSec);
+    if (!finer.length) return;
+    (async () => {
+      await Promise.all(
+        finer.map(async (htf) => {
+          try {
+            const cs = await fetchCandles(config.source, config.symbol, htf, replayLimit(htf), endTs);
+            if (!cancelled) replayHtfFetchRef.current.set(`${config.source}|${config.symbol}|${htf}`, cs);
+          } catch {}
+        })
+      );
+      if (!cancelled) setReplayHtfVersion((v) => v + 1);
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, isReplay, config.source, config.symbol, htfKey, config.interval, endTs]);
 
   // ---- ICT Fair Value Gaps: stacked indicator that shades 3-candle imbalances
   // on the price pane, extended a couple of candles forward. Toggled by config.fvg.
