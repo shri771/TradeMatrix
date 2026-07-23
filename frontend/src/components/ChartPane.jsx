@@ -92,11 +92,19 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
   const smtOverlayIdsRef = useRef(new Set()); // SMT divergence overlay ids
   const smtSigRef = useRef(""); // signature of the last-drawn divergence set
   const smtCorrelateRef = useRef({ key: null, promise: null }); // cached correlate fetch
+  // Last-good HTF candles per `${source}|${symbol}|${htf}`. Lets a re-run (e.g.
+  // toggling a new timeframe on) keep the already-loaded groups visible instead of
+  // blanking them while every timeframe re-fetches, and lets a slow/failed refetch
+  // fall back to the previous candles rather than vanishing.
+  const htfCacheRef = useRef(new Map());
 
   const isReplay = mode === "replay";
   const indicators = (config.indicators ?? []).filter((x) => typeof x === "string");
   const indKey = indicators.join(",");
-  const htfs = (config.htfs ?? []).filter((x) => HTF_OPTIONS.includes(x));
+  // Always render lowest → highest timeframe, left → right, regardless of the
+  // order the user toggled them on. HTF_OPTIONS is defined ascending, so filtering
+  // it by the selected set yields that order (and makes htfKey order-independent).
+  const htfs = HTF_OPTIONS.filter((x) => (config.htfs ?? []).includes(x));
   const htfKey = htfs.join(",");
   const smtEnabled = !!config.smt && SMT_TRIO.includes(config.symbol);
 
@@ -237,11 +245,26 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     // yet) so every chosen timeframe's column shows immediately instead of a
     // single "HTF …" placeholder while data loads.
     try { chart.removeIndicator(MAIN_PANE, HTF_INDICATOR); } catch {}
+    // Seed each group from the last-good cache so already-loaded timeframes stay
+    // painted through the re-run (e.g. when a new timeframe is toggled on) instead
+    // of flashing to an empty skeleton while everything re-fetches.
+    const cacheKey = (htf) => `${config.source}|${config.symbol}|${htf}`;
+    const seeded = (htf) => htfCacheRef.current.get(cacheKey(htf)) ?? { htf, candles: [] };
     chart.createIndicator(
-      { name: HTF_INDICATOR, extendData: { groups: htfs.map((htf) => ({ htf, candles: [] })) } },
+      { name: HTF_INDICATOR, extendData: { groups: htfs.map((htf) => seeded(htf)) } },
       true,
       { id: MAIN_PANE }
     );
+
+    // In replay mode the HTF candles are rebuilt from the main chart's revealed
+    // bars (<= the replay clock) by the clock-driven effect below, so they track
+    // the replayed time and the newest one grows then locks. Skip the live fetch.
+    if (isReplay) {
+      return () => {
+        try { chart.removeIndicator(MAIN_PANE, HTF_INDICATOR); } catch {}
+        try { chart.setOffsetRightDistance(DEFAULT_RIGHT_OFFSET); } catch {}
+      };
+    }
 
     const others = smtEnabled ? SMT_TRIO.filter((s) => s !== config.symbol) : [];
 
@@ -252,7 +275,11 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
       // sequential loop that only painted after ALL fetches finished, so a single
       // slow interval left the whole panel stuck on "HTF …". Panel order and the
       // reserved right-margin width both follow `htfs`.
-      const byHtf = new Map(htfs.map((htf) => [htf, { htf, candles: [] }]));
+      //
+      // Seed from the last-good cache, NOT empty: a group that already has candles
+      // keeps them until its refetch lands, so a slow/failed refetch (or the first
+      // paint of a periodic refresh cycle) never blanks the other groups.
+      const byHtf = new Map(htfs.map((htf) => [htf, seeded(htf)]));
       const paint = () => {
         if (cancelled || !chartRef.current) return;
         const groups = htfs.map((htf) => byHtf.get(htf));
@@ -263,10 +290,26 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
         htfs.map(async (htf) => {
           try {
             const cs = await fetchCandles(config.source, config.symbol, htf, HTF_COUNT);
+            // A momentarily-empty response shouldn't wipe a group that already has
+            // candles — keep the previous data rather than blanking.
+            if (!cs.length && (byHtf.get(htf)?.candles?.length ?? 0) > 0) {
+              paint();
+              return;
+            }
             const group = { htf, candles: cs.map(toHtf) };
+            // Paint this timeframe's OWN candles immediately — do NOT wait on the
+            // SMT correlate fetches below. The correlates hit OTHER symbols whose
+            // envelopes may be cold and slow (databento's 30m shares the big
+            // ohlcv-1m envelope, which can take tens of seconds or 504), and
+            // blocking the group's paint on them meant the candles themselves
+            // never appeared (the "30m HTF not showing" bug).
+            byHtf.set(htf, group);
+            htfCacheRef.current.set(cacheKey(htf), group); // remember last-good
+            paint();
             if (others.length) {
               // Pull the correlated symbols' HTF too and reduce to {label, dir} —
-              // the indicator only needs the last-candle direction.
+              // the indicator only needs the last-candle direction. Added to the
+              // group asynchronously; a slow/failed correlate never hides candles.
               const correlates = await Promise.all(
                 others.map(async (sym) => {
                   try {
@@ -284,10 +327,13 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
                 })
               );
               group.correlates = correlates.filter(Boolean);
+              byHtf.set(htf, group);
+              htfCacheRef.current.set(cacheKey(htf), group);
             }
-            byHtf.set(htf, group);
           } catch {
-            byHtf.set(htf, { htf, candles: [] });
+            // Keep whatever we last had for this timeframe (seeded above) so a
+            // failed refetch leaves the existing candles in place instead of
+            // vanishing them.
           }
           paint(); // incremental: show each timeframe the moment its data lands
         })
@@ -306,7 +352,40 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
       try { chart.setOffsetRightDistance(DEFAULT_RIGHT_OFFSET); } catch {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ready, config.source, config.symbol, htfKey, smtEnabled]);
+  }, [ready, config.source, config.symbol, htfKey, smtEnabled, isReplay]);
+
+  // ---- Replay HTF candles: rebuild each higher-timeframe group from the main
+  // chart's revealed bars (which in replay are exactly the bars <= the clock), so
+  // the HTF panel tracks the replayed time. Runs every clock tick: the bar that
+  // contains the clock keeps growing (its high/low/close evolve as more sub-bars
+  // are revealed) and locks in when the clock crosses the HTF boundary, at which
+  // point a fresh forming bar begins. No network — pure aggregation of on-chart data.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !ready || !isReplay || !htfs.length) return;
+    const mainData = chart.getDataList();
+    if (!mainData || !mainData.length) return;
+    const groups = htfs.map((htf) => {
+      const bucketMs = (INTERVAL_SECONDS[htf] || 1800) * 1000;
+      const buckets = new Map(); // bucketStartMs -> aggregated HTF candle
+      for (const c of mainData) {
+        const ts = c.timestamp;
+        if (ts == null) continue;
+        const key = Math.floor(ts / bucketMs) * bucketMs;
+        const b = buckets.get(key);
+        if (!b) buckets.set(key, { t: Math.floor(key / 1000), o: c.open, h: c.high, l: c.low, c: c.close });
+        else {
+          if (c.high > b.h) b.h = c.high;
+          if (c.low < b.l) b.l = c.low;
+          b.c = c.close; // latest revealed sub-bar's close => forming candle grows
+        }
+      }
+      // Map preserves insertion (chronological) order; keep the last HTF_COUNT.
+      return { htf, candles: Array.from(buckets.values()).slice(-HTF_COUNT) };
+    });
+    try { chart.overrideIndicator({ name: HTF_INDICATOR, extendData: { groups } }, MAIN_PANE); } catch {}
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, isReplay, htfKey, clock]);
 
   // ---- ICT Fair Value Gaps: stacked indicator that shades 3-candle imbalances
   // on the price pane, extended a couple of candles forward. Toggled by config.fvg.
