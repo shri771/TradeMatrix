@@ -45,15 +45,20 @@ export function registerTrendLineOverlay() {
       }
     },
 
-    createPointFigures: ({ coordinates }) => {
+    createPointFigures: ({ coordinates, bounding }) => {
       if (coordinates.length < 2) return [];
       const [p1, p2] = coordinates;
-      // Draw both ends at p1's y so the segment is perfectly level even if the
-      // two anchors drift a sub-pixel apart.
+      // Clamp the segment's x to the chart width. On a coarser timeframe an anchor
+      // whose timestamp is outside the loaded/revealed data extrapolates to a huge
+      // off-screen x; drawing to it made the bounded line look like it ran to
+      // infinity. Clamping keeps it within the visible chart. (y is p1's price so
+      // the segment stays perfectly level even if the anchors drift a sub-pixel.)
+      const w = bounding?.width ?? 0;
+      const clampX = (x) => (w > 0 ? Math.max(-1, Math.min(w + 1, x)) : x);
       return [
         {
           type: "line",
-          attrs: { coordinates: [{ x: p1.x, y: p1.y }, { x: p2.x, y: p1.y }] },
+          attrs: { coordinates: [{ x: clampX(p1.x), y: p1.y }, { x: clampX(p2.x), y: p1.y }] },
           styles: { color: COLOR, size: 1 },
         },
       ];

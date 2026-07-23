@@ -101,8 +101,13 @@ export function registerFibonacciOverlay() {
       // Left edge = the leftmost of the two anchors.
       // Right edge = the 3rd anchor if placed & to the right of xLeft; while
       // the user's still picking the 3rd click, fall back to the chart edge.
-      const xLeft = Math.min(p1.x, p2.x);
-      const xRight = edge && edge.x > xLeft ? edge.x : bounding.width;
+      // Clamp x to the chart width so an anchor whose timestamp falls outside the
+      // loaded/revealed data (common after switching to a coarser timeframe)
+      // extrapolates to a huge off-screen x and no longer makes the levels run to
+      // infinity.
+      const clampX = (x) => Math.max(-1, Math.min((bounding.width ?? 0) + 1, x));
+      const xLeft = clampX(Math.min(p1.x, p2.x));
+      const xRight = clampX(edge && edge.x > Math.min(p1.x, p2.x) ? edge.x : bounding.width);
 
       const figs = [];
 
@@ -110,7 +115,7 @@ export function registerFibonacciOverlay() {
       // stock built-in's UX affordance so the user knows where they clicked.
       figs.push({
         type: "line",
-        attrs: { coordinates: [{ x: p1.x, y: p1.y }, { x: p2.x, y: p2.y }] },
+        attrs: { coordinates: [{ x: clampX(p1.x), y: p1.y }, { x: clampX(p2.x), y: p2.y }] },
         styles: { color: COLOR_BASE, size: 1, style: "dashed", dashedValue: [3, 3] },
       });
 
