@@ -22,22 +22,25 @@ function loadPos() {
 
 function fmt(ts) {
   if (ts == null) return "—";
-  return new Date(ts * 1000).toLocaleString([], {
-    month: "short",
-    day: "numeric",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+  // Day/month/year with 24h time, matching the chart's date format.
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getDate())}/${pad(d.getMonth() + 1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
 }
 
-// <input type=date> value (YYYY-MM-DD) <-> unix seconds.
+// "dd/mm/yyyy" (UTC) <-> unix seconds, for the "As of" text input.
 function tsToDateInput(ts) {
   if (ts == null) return "";
-  return new Date(ts * 1000).toISOString().slice(0, 10);
+  const d = new Date(ts * 1000);
+  const pad = (n) => String(n).padStart(2, "0");
+  return `${pad(d.getUTCDate())}/${pad(d.getUTCMonth() + 1)}/${d.getUTCFullYear()}`;
 }
 function dateInputToTs(v) {
-  if (!v) return null;
-  return Math.floor(new Date(v + "T23:59:59Z").getTime() / 1000);
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec((v || "").trim());
+  if (!m) return null;
+  const [, dd, mm, yyyy] = m;
+  const t = new Date(`${yyyy}-${mm}-${dd}T23:59:59Z`).getTime();
+  return Number.isNaN(t) ? null : Math.floor(t / 1000);
 }
 
 export default function ReplayBar() {
@@ -65,6 +68,12 @@ export default function ReplayBar() {
   const barRef = useRef(null);
   const dragRef = useRef(null); // { dx, dy } offset from bar top-left at drag start
   const [pos, setPos] = useState(loadPos);
+
+  // Local text for the "As of" input so partial/invalid typing (e.g. "09/03/20")
+  // isn't clobbered by a re-derived value; we only commit to endTs on a complete
+  // date. Kept in sync when endTs changes elsewhere.
+  const [dateText, setDateText] = useState(() => tsToDateInput(endTs));
+  useEffect(() => { setDateText(tsToDateInput(endTs)); }, [endTs]);
 
   const clampPos = useCallback((x, y) => {
     const bar = barRef.current;
@@ -142,11 +151,20 @@ export default function ReplayBar() {
 
       <label className="rb-label">As of</label>
       <input
-        type="date"
+        type="text"
         className="rb-date"
-        value={tsToDateInput(endTs)}
-        onChange={(e) => setEndTs(dateInputToTs(e.target.value))}
-        title="Load history up to this date (blank = latest)"
+        inputMode="numeric"
+        placeholder="dd/mm/yyyy"
+        maxLength={10}
+        value={dateText}
+        onChange={(e) => {
+          const v = e.target.value;
+          setDateText(v);
+          if (v.trim() === "") { setEndTs(null); return; }
+          const ts = dateInputToTs(v);
+          if (ts != null) setEndTs(ts);
+        }}
+        title="Load history up to this date (dd/mm/yyyy; blank = latest)"
       />
 
       <button className="rb-btn" onClick={stepBack} title="Step back">⏮</button>

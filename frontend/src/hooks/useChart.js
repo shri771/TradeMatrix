@@ -7,9 +7,14 @@ import { INTERVAL_SECONDS } from "../lib/kline";
 const XAXIS_TYPE = 2;
 
 /**
- * Build a date formatter that shows "HH:mm" on the X-axis for intraday intervals
- * (<= 1h), and falls back to KLineChart's default format string for higher
- * timeframes AND for tooltip/crosshair contexts (which stay full-detail).
+ * Build a date formatter. Any date shown anywhere on the chart (x-axis, tooltip,
+ * crosshair) is rendered in DAY/MONTH/YEAR order with slash separators. Intraday
+ * x-axis ticks stay time-only ("HH:mm") since those are time-of-day labels.
+ *
+ * KLineChart hands us a `format` string (e.g. "YYYY-MM-DD HH:mm", "MM-DD") that
+ * says WHICH components it wants at this zoom/context; we honour that set but
+ * always emit them day → month → year, e.g. "MM-DD" -> "DD/MM",
+ * "YYYY-MM-DD HH:mm" -> "DD/MM/YYYY HH:mm".
  */
 function makeFormatDate(intervalSec) {
   return (dateTimeFormat, timestamp, format, type) => {
@@ -19,18 +24,28 @@ function makeFormatDate(intervalSec) {
     // string and never blow up the chart.
     try {
       if (!Number.isFinite(timestamp)) return "";
-      const useHourMinute = type === XAXIS_TYPE && intervalSec <= 3600;
-      const effectiveFormat = useHourMinute ? "HH:mm" : (typeof format === "string" ? format : "YYYY-MM-DD HH:mm");
       const parts = dateTimeFormat.formatToParts(new Date(timestamp));
       const p = {};
       for (const part of parts) p[part.type] = part.value;
-      return effectiveFormat
-        .replace(/YYYY/g, p.year ?? "")
-        .replace(/MM/g, p.month ?? "")
-        .replace(/DD/g, p.day ?? "")
-        .replace(/HH/g, p.hour ?? "00")
-        .replace(/mm/g, p.minute ?? "00")
-        .replace(/ss/g, p.second ?? "00");
+
+      // Intraday x-axis: time-of-day ticks only.
+      if (type === XAXIS_TYPE && intervalSec <= 3600) {
+        return `${p.hour ?? "00"}:${p.minute ?? "00"}`;
+      }
+
+      const fmt = typeof format === "string" ? format : "YYYY-MM-DD HH:mm";
+      // Re-emit the requested date components in day/month/year order.
+      const date = [];
+      if (/DD/.test(fmt)) date.push(p.day ?? "");
+      if (/MM/.test(fmt)) date.push(p.month ?? "");
+      if (/YYYY/.test(fmt)) date.push(p.year ?? "");
+      let out = date.join("/");
+      if (/HH/.test(fmt) || /mm/.test(fmt)) {
+        let time = `${p.hour ?? "00"}:${p.minute ?? "00"}`;
+        if (/ss/.test(fmt)) time += `:${p.second ?? "00"}`;
+        out = out ? `${out} ${time}` : time;
+      }
+      return out;
     } catch {
       return "";
     }

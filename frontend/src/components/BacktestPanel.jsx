@@ -9,10 +9,14 @@ function defaultParams(key) {
   return Object.fromEntries(STRATEGIES[key].params.map((p) => [p.key, p.default]));
 }
 
-// "YYYY-MM-DD" from the <input type=date>  <->  unix seconds.
+// "dd/mm/yyyy" (from the text input) -> unix seconds. Returns null for blank or
+// anything not yet a complete valid date (treated as "latest").
 function dateInputToTs(v) {
-  if (!v) return null;
-  return Math.floor(new Date(v + "T23:59:59Z").getTime() / 1000);
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec((v || "").trim());
+  if (!m) return null;
+  const [, dd, mm, yyyy] = m;
+  const t = new Date(`${yyyy}-${mm}-${dd}T23:59:59Z`).getTime();
+  return Number.isNaN(t) ? null : Math.floor(t / 1000);
 }
 
 function EquitySvg({ curve }) {
@@ -41,7 +45,7 @@ export default function BacktestPanel({ source, symbol, interval, onResult }) {
   const [key, setKey] = useState("smaCross");
   const [params, setParams] = useState(() => defaultParams("smaCross"));
   const [bars, setBars] = useState(5000); // default to the max window
-  const [asOf, setAsOf] = useState(""); // "YYYY-MM-DD" — blank = latest
+  const [asOf, setAsOf] = useState(""); // "dd/mm/yyyy" — blank = latest
   const [running, setRunning] = useState(false);
   const [result, setResult] = useState(null);
   const [error, setError] = useState(null);
@@ -111,10 +115,13 @@ export default function BacktestPanel({ source, symbol, interval, onResult }) {
         <label className="bt-param">
           As of
           <input
-            type="date"
+            type="text"
+            inputMode="numeric"
+            placeholder="dd/mm/yyyy"
+            maxLength={10}
             value={asOf}
             onChange={(e) => setAsOf(e.target.value)}
-            title="Backtest ends on this date (blank = latest)"
+            title="Backtest ends on this date (dd/mm/yyyy; blank = latest)"
           />
         </label>
       </div>
