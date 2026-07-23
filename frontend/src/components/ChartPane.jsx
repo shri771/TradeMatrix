@@ -8,6 +8,7 @@ import { fetchCandles } from "../lib/api";
 import { toKline, INTERVAL_SECONDS } from "../lib/kline";
 import { registerHtfIndicator, HTF_INDICATOR, htfPanelWidth } from "../lib/htfIndicator";
 import { registerFvgIndicator, FVG_INDICATOR } from "../lib/fvgIndicator";
+import { registerCisdIndicator, CISD_INDICATOR } from "../lib/cisdIndicator";
 import { registerPositionOverlays } from "../lib/positionOverlay";
 import { registerFibonacciOverlay } from "../lib/fibonacciOverlay";
 import { registerTrendLineOverlay } from "../lib/trendLineOverlay";
@@ -20,6 +21,7 @@ import BacktestPanel from "./BacktestPanel";
 
 registerHtfIndicator();
 registerFvgIndicator();
+registerCisdIndicator();
 registerPositionOverlays();
 registerFibonacciOverlay();
 registerTrendLineOverlay();
@@ -402,6 +404,23 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
       try { chart.removeIndicator(MAIN_PANE, FVG_INDICATOR); } catch {}
     };
   }, [ready, config.fvg]);
+
+  // ---- ICT Change in State of Delivery: marks the level (open of the last
+  // same-direction run) that price reclaimed/broke to flip delivery. Toggled by
+  // config.cisd.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !ready) return;
+    if (!config.cisd) {
+      try { chart.removeIndicator(MAIN_PANE, CISD_INDICATOR); } catch {}
+      return;
+    }
+    try { chart.removeIndicator(MAIN_PANE, CISD_INDICATOR); } catch {}
+    chart.createIndicator({ name: CISD_INDICATOR }, true, { id: MAIN_PANE });
+    return () => {
+      try { chart.removeIndicator(MAIN_PANE, CISD_INDICATOR); } catch {}
+    };
+  }, [ready, config.cisd]);
 
   // ---- SMT trend lines on the main chart ----
   // When SMT is enabled + we're on one of the trio, detect divergences between
@@ -851,6 +870,14 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
                     onChange={() => onConfigChange({ ...config, fvg: !config.fvg })}
                   />
                   Fair value gaps
+                </label>
+                <label className="menu-item check" title="ICT Change in State of Delivery — marks the open level reclaimed/broken when delivery flips bullish/bearish">
+                  <input
+                    type="checkbox"
+                    checked={!!config.cisd}
+                    onChange={() => onConfigChange({ ...config, cisd: !config.cisd })}
+                  />
+                  Change in state of delivery
                 </label>
               </div>
             )}
