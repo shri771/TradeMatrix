@@ -11,6 +11,10 @@ import { INTERVAL_SECONDS } from "../lib/kline";
 const ReplayContext = createContext(null);
 
 const TICK_MS = 200;
+// When play is pressed from the end of the window, rewind by this many bars so
+// candles replay forward — but no further, so the earlier bars stay on the left
+// as history instead of the chart resetting to a single candle.
+const REPLAY_START_LOOKBACK_BARS = 300;
 
 /**
  * Global replay on an ABSOLUTE wall-clock. Every pane reveals candles with
@@ -94,7 +98,25 @@ export function ReplayProvider({ children }) {
     mode,
     setMode,
     playing,
-    play: () => setPlaying(true),
+    // Play forward. On entry the clock is seated at ~99% of the window so replay
+    // "looks like live" — but pressing play there (or after a run has parked the
+    // clock at range.end) leaves nothing to advance: the first tick hits range.end
+    // and immediately pauses, which reads as "play does nothing". So when we're
+    // at/near the end, rewind — but only by a bounded lookback (capped at half the
+    // window), NOT all the way to range.start, so the earlier bars stay visible on
+    // the left as history instead of the chart collapsing to a single candle. A
+    // clock the user has scrubbed into the middle is left alone — play resumes there.
+    play: () => {
+      setClock((c) => {
+        if (!range) return c;
+        const span = range.end - range.start;
+        const atEnd = c == null || c >= range.end - span * 0.02;
+        if (!atEnd) return c;
+        const lookback = Math.min(REPLAY_START_LOOKBACK_BARS * finestSec, span * 0.5);
+        return range.end - lookback;
+      });
+      setPlaying(true);
+    },
     pause: () => setPlaying(false),
     speed,
     setSpeed,
