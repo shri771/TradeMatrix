@@ -1,9 +1,20 @@
 import { useEffect, useRef, useState } from "react";
 import { fetchCandles } from "../lib/api";
-import { toKline } from "../lib/kline";
+import { toKline, INTERVAL_SECONDS } from "../lib/kline";
 import { useReplay } from "../replay/ReplayProvider";
 
-const REPLAY_BARS = 1500; // window size loaded per pane for a replay session
+// Replay loads a fixed TIME window (not a fixed bar count) per pane, so every
+// timeframe spans the SAME period. That keeps the global replay clock valid when
+// you switch timeframes — a 4h chart and a 15m chart then replay the exact same
+// dates instead of drifting apart (a fixed bar count made 4h span ~250 days and
+// 15m only ~16 days). Capped at the backend max so fine intervals stay in one
+// request; intervals finer than the cap allows simply cover less history.
+const REPLAY_WINDOW_SEC = 45 * 86400; // ~45 days
+const MAX_REPLAY_BARS = 5000;
+export function replayLimit(interval) {
+  const sec = INTERVAL_SECONDS[interval] || 60;
+  return Math.min(MAX_REPLAY_BARS, Math.ceil(REPLAY_WINDOW_SEC / sec));
+}
 
 /**
  * Replay-mode data feed for a pane. Loads a window of history once, then reveals
@@ -22,7 +33,7 @@ export function useReplayData({ paneId, source, symbol, interval, enabled, chart
     (async () => {
       onLoading?.(true);
       try {
-        const cs = await fetchCandles(source, symbol, interval, REPLAY_BARS, endTs);
+        const cs = await fetchCandles(source, symbol, interval, replayLimit(interval), endTs);
         if (cancelled) return;
         dataRef.current = cs;
         renderedRef.current = 0;

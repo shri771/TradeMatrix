@@ -70,11 +70,17 @@ export function ReplayProvider({ children }) {
   // back controls are for; play just walks forward from wherever the clock is.
   useEffect(() => {
     if (mode !== "replay" || !range) return;
-    setClock((c) =>
-      c == null || c < range.start || c > range.end
-        ? Math.round(range.start + (range.end - range.start) * 0.99)
-        : c
-    );
+    setClock((c) => {
+      // First seat (or after an "As of" refetch clears the clock): land near the
+      // end so entering replay looks like the live view.
+      if (c == null) return Math.round(range.start + (range.end - range.start) * 0.99);
+      // The range moved (e.g. a timeframe switch loaded a different window). Keep
+      // the SAME moment so timeframes stay coordinated — only CLAMP it into the
+      // new window; never fling the clock forward to the latest bar.
+      if (c < range.start) return range.start;
+      if (c > range.end) return range.end;
+      return c;
+    });
   }, [mode, range, endTs]);
 
   useEffect(() => {
