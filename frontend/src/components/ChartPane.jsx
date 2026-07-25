@@ -12,6 +12,7 @@ import { registerCisdIndicator, CISD_INDICATOR } from "../lib/cisdIndicator";
 import { registerPositionOverlays } from "../lib/positionOverlay";
 import { registerFibonacciOverlay } from "../lib/fibonacciOverlay";
 import { registerTrendLineOverlay } from "../lib/trendLineOverlay";
+import { registerDatePriceRangeOverlay } from "../lib/datePriceRangeOverlay";
 import { setPaneTimeCtx, clearPaneTimeCtx } from "../lib/overlayTimeCtx";
 import { registerSmtOverlay } from "../lib/smtOverlay";
 import { detectDivergences } from "../lib/smtDetect";
@@ -26,6 +27,7 @@ registerCisdIndicator();
 registerPositionOverlays();
 registerFibonacciOverlay();
 registerTrendLineOverlay();
+registerDatePriceRangeOverlay();
 registerSmtOverlay();
 
 const MAIN_PANE = "candle_pane";
@@ -73,6 +75,7 @@ const POSITION_TOOLS = [
 const OVERLAY_LABELS = {
   ...Object.fromEntries([...DRAW_TOOLS, ...POSITION_TOOLS].map((t) => [t.id, t.label])),
   trendLine: "Trend line",
+  datePriceRange: "Date & price range",
 };
 
 export default function ChartPane({ paneId, config, sources, onConfigChange }) {
@@ -1058,6 +1061,13 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
             onClick={() => startDraw("trendLine")}
           >
             ╱
+          </button>
+          <button
+            className="tool tool-range"
+            title="Date & price range"
+            onClick={() => startDraw("datePriceRange")}
+          >
+            ⤢
           </button>
           <div className="menu-wrap">
             <button

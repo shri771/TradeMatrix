@@ -310,10 +310,12 @@ body {
 .tool.tool-short { color: var(--down); }
 .tool.tool-fib   { color: #f0b90b; }
 .tool.tool-trend { color: #2962ff; }
+.tool.tool-range { color: #22b8cf; }
 .tool.tool-long:hover  { border-color: var(--up); }
 .tool.tool-short:hover { border-color: var(--down); }
 .tool.tool-fib:hover   { border-color: #f0b90b; }
 .tool.tool-trend:hover { border-color: #2962ff; }
+.tool.tool-range:hover { border-color: #22b8cf; }
 
 .menu-wrap { position: relative; }
 
