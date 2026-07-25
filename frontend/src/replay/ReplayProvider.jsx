@@ -44,6 +44,36 @@ export function ReplayProvider({ children }) {
     return secs.length ? Math.min(...secs) : 60;
   }, [panesMeta]);
 
+  // The earliest bar time strictly AFTER `t`, across all panes (union). Markets
+  // that don't trade 24/7 have long stretches with no bars — this lets the clock
+  // hop from real bar to real bar and skip that dead time. Returns null past the
+  // last bar. Binary-searches each pane's sorted `times`.
+  const nextBarTime = useCallback((t) => {
+    let best = null;
+    for (const m of Object.values(panesMeta)) {
+      const ts = m.times;
+      if (!ts || !ts.length) continue;
+      let lo = 0, hi = ts.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (ts[mid] <= t) lo = mid + 1; else hi = mid; }
+      if (lo < ts.length && (best == null || ts[lo] < best)) best = ts[lo];
+    }
+    return best;
+  }, [panesMeta]);
+
+  // The latest bar time strictly BEFORE `t`, across all panes — the mirror of
+  // nextBarTime, used by step-back so ⏮ lands on the previous real candle.
+  const prevBarTime = useCallback((t) => {
+    let best = null;
+    for (const m of Object.values(panesMeta)) {
+      const ts = m.times;
+      if (!ts || !ts.length) continue;
+      let lo = 0, hi = ts.length;
+      while (lo < hi) { const mid = (lo + hi) >> 1; if (ts[mid] < t) lo = mid + 1; else hi = mid; }
+      if (lo > 0 && (best == null || ts[lo - 1] > best)) best = ts[lo - 1];
+    }
+    return best;
+  }, [panesMeta]);
+
   const registerPane = useCallback((id, meta) => {
     setPanesMeta((prev) => ({ ...prev, [id]: meta }));
   }, []);
@@ -87,7 +117,15 @@ export function ReplayProvider({ children }) {
     if (!playing || mode !== "replay" || !range) return;
     const id = setInterval(() => {
       setClock((c) => {
-        const next = (c ?? range.start) + finestSec * speed * (TICK_MS / 1000);
+        const base = c ?? range.start;
+        let next = base + finestSec * speed * (TICK_MS / 1000);
+        // Gap-skip: if the next real bar is more than ~1.5 bars away in wall-clock
+        // (a night/weekend/holiday with no candles), jump straight to it instead of
+        // crawling through the dead time — that crawl is the "clock moves but the
+        // candles don't" freeze on non-24/7 markets. Contiguous in-session bars sit
+        // ~1 interval apart, below the threshold, so normal play stays smooth.
+        const nb = nextBarTime(base);
+        if (nb != null && nb - base > finestSec * 1.5 && nb > next) next = nb;
         if (next >= range.end) {
           setPlaying(false);
           return range.end;
@@ -96,7 +134,7 @@ export function ReplayProvider({ children }) {
       });
     }, TICK_MS);
     return () => clearInterval(id);
-  }, [playing, mode, speed, finestSec, range]);
+  }, [playing, mode, speed, finestSec, range, nextBarTime]);
 
   const clamp = useCallback((t) => (range ? Math.max(range.start, Math.min(range.end, t)) : t), [range]);
 
@@ -131,8 +169,18 @@ export function ReplayProvider({ children }) {
     hasData: !!range,
     displayTime: clock,
     seek: (t) => setClock(clamp(t)),
-    stepForward: () => setClock((c) => clamp((c ?? range?.start ?? 0) + finestSec)),
-    stepBack: () => setClock((c) => clamp((c ?? range?.start ?? 0) - finestSec)),
+    // Step to the adjacent REAL bar (skipping gaps) so ⏭/⏮ advance exactly one
+    // candle, not one nominal interval that might land in dead non-trading time.
+    stepForward: () => setClock((c) => {
+      const from = c ?? range?.start ?? 0;
+      const nb = nextBarTime(from);
+      return clamp(nb != null ? nb : from + finestSec);
+    }),
+    stepBack: () => setClock((c) => {
+      const from = c ?? range?.start ?? 0;
+      const pb = prevBarTime(from);
+      return clamp(pb != null ? pb : from - finestSec);
+    }),
     endTs,
     setEndTs: (ts) => {
       setEndTs(ts);

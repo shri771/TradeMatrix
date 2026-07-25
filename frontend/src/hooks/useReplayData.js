@@ -51,6 +51,10 @@ export function useReplayData({ paneId, source, symbol, interval, enabled, chart
             interval,
             minTime: Math.max(cs[0].time, endRef - REPLAY_WINDOW_SEC),
             maxTime: cs[cs.length - 1].time,
+            // Sorted bar times so the replay clock can skip non-trading gaps
+            // (nights, weekends, holidays) instead of crawling through dead
+            // wall-clock time where no candle exists. See ReplayProvider.
+            times: cs.map((c) => c.time),
           });
         }
         setVersion((v) => v + 1);
