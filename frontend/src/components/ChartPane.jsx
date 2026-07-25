@@ -12,6 +12,7 @@ import { registerCisdIndicator, CISD_INDICATOR } from "../lib/cisdIndicator";
 import { registerPositionOverlays } from "../lib/positionOverlay";
 import { registerFibonacciOverlay } from "../lib/fibonacciOverlay";
 import { registerTrendLineOverlay } from "../lib/trendLineOverlay";
+import { setPaneTimeCtx, clearPaneTimeCtx } from "../lib/overlayTimeCtx";
 import { registerSmtOverlay } from "../lib/smtOverlay";
 import { detectDivergences } from "../lib/smtDetect";
 import TickerBar from "./TickerBar";
@@ -75,7 +76,7 @@ const OVERLAY_LABELS = {
 };
 
 export default function ChartPane({ paneId, config, sources, onConfigChange }) {
-  const { hostRef, chartRef, ready, resetView } = useChart(config.interval);
+  const { hostRef, chartRef, ready, resetView, initialBarSpaceRef } = useChart(config.interval);
   const { mode, clock, endTs } = useReplay();
   const { reportPrice, trades } = useTrading();
   const [price, setPrice] = useState(null);
@@ -89,6 +90,10 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
   const [, setDrawVersion] = useState(0);
   const menuRef = useRef(null);
   const overlayIdsRef = useRef([]);
+  // Visible time window captured at a timeframe switch, so the new timeframe can
+  // reopen on the SAME slice of the market (keeping drawings in view) instead of
+  // snapping to the latest bars. { leftTs, rightTs, targetInterval }.
+  const pendingViewRef = useRef(null);
   const markerIdsRef = useRef(new Map()); // tradeId -> overlay id
   const btMarkerIdsRef = useRef([]); // backtest entry-marker overlay ids
   const smtOverlayIdsRef = useRef(new Set()); // SMT divergence overlay ids
@@ -116,12 +121,39 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
   const htfKey = htfs.join(",");
   const smtEnabled = !!config.smt && SMT_TRIO.includes(config.symbol);
 
+  // Publish this pane's currently-loaded bar window so time-anchored overlays
+  // (trend line, position, fibonacci) can re-project anchors that fall outside it
+  // instead of snapping them to an edge bar. Cheap: reads the chart's own data
+  // array and its first/last timestamp. Called wherever the data changes (initial
+  // history, each live/replay tick, and older-history loads).
+  const refreshTimeCtx = () => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    const data = chart.getDataList?.() ?? [];
+    if (!data.length) return;
+    const firstTs = data[0]?.timestamp;
+    const lastTs = data[data.length - 1]?.timestamp;
+    // Average REAL time each bar covers across the loaded window — gap-inclusive,
+    // so markets that don't trade 24/7 (equities, futures) don't fool the overlay
+    // re-projection into overcounting bars. Falls back to the nominal interval
+    // when there's only one bar to measure.
+    const nominalMs = (INTERVAL_SECONDS[config.interval] || 60) * 1000;
+    const msPerBar =
+      data.length > 1 && lastTs > firstTs ? (lastTs - firstTs) / (data.length - 1) : nominalMs;
+    setPaneTimeCtx(paneId, { firstTs, lastTs, msPerBar });
+  };
+
   // Update the ticker and mark the trading account at the pane's current price.
   const mark = (close, time) => {
     setPrice(close);
     setLastTime(time);
     if (close != null) reportPrice(config.symbol, close, time);
+    refreshTimeCtx();
+    restorePendingView();
   };
+
+  // Drop this pane's published time window when the pane unmounts.
+  useEffect(() => () => clearPaneTimeCtx(paneId), [paneId]);
 
   // In live mode, flag data that's gone stale (e.g. a closed/holiday market) so a
   // frozen chart reads as "market closed" rather than broken.
@@ -182,6 +214,7 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
         const older = await fetchCandles(config.source, config.symbol, config.interval, 500, end);
         const klines = older.filter((c) => c.time * 1000 < data.timestamp).map(toKline);
         callback(klines, klines.length > 0);
+        refreshTimeCtx(); // older bars extend the window left — re-anchor overlays
       } catch {
         callback([], false);
       }
@@ -205,7 +238,71 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
         if (!def.intervals.includes(next.interval)) next.interval = def.intervals[0];
       }
     }
+    // Pure timeframe switch (same instrument): remember the currently-visible time
+    // window so restorePendingView can reopen the new timeframe on it. Captured
+    // BEFORE the switch, while the chart still holds the old timeframe's bars.
+    if (
+      next.interval !== config.interval &&
+      next.source === config.source &&
+      next.symbol === config.symbol
+    ) {
+      captureViewForIntervalChange(next.interval);
+    }
     onConfigChange(next);
+  };
+
+  // Snapshot the visible [leftTs, rightTs] time window from the current (old)
+  // timeframe's bars.
+  const captureViewForIntervalChange = (nextInterval) => {
+    const chart = chartRef.current;
+    if (!chart) return;
+    try {
+      const vr = chart.getVisibleRange();
+      const data = chart.getDataList();
+      if (!data.length || !vr) return;
+      const li = Math.max(0, Math.min(data.length - 1, vr.from));
+      const ri = Math.max(0, Math.min(data.length - 1, vr.to));
+      const leftTs = data[li]?.timestamp;
+      const rightTs = data[ri]?.timestamp;
+      if (leftTs != null && rightTs != null && rightTs > leftTs) {
+        pendingViewRef.current = { leftTs, rightTs, targetInterval: nextInterval };
+      }
+    } catch {}
+  };
+
+  // After the new timeframe's data has loaded, scroll so the SAME moment in time
+  // sits at the right edge — but always at NORMAL candle width. An earlier version
+  // zoomed out to fit the whole captured span, which on a coarse→fine switch (e.g.
+  // a ~5-month daily view reopening on 1h ≈ 4000 bars) crushed the candles down to
+  // 1px until you hit Replay. Keeping the reset button's default width means the
+  // candles look right immediately; the drawing lands at its true time (see
+  // overlayTimeCtx) whether or not it happens to be on-screen. Runs once per switch
+  // (consumes the ref). Called from mark() after each data apply.
+  const restorePendingView = () => {
+    const pv = pendingViewRef.current;
+    const chart = chartRef.current;
+    if (!pv || !chart || pv.targetInterval !== config.interval) return;
+    const data = chart.getDataList();
+    if (!data.length) return;
+    pendingViewRef.current = null; // consume once; re-asserts below handle late resets
+
+    const applyView = () => {
+      const c = chartRef.current;
+      const d = c?.getDataList?.() ?? [];
+      if (!c || !d.length || config.interval !== pv.targetInterval) return;
+      const normal = initialBarSpaceRef.current || 8;
+      try {
+        c.setBarSpace(normal);
+        c.scrollToTimestamp(pv.rightTs, 0);
+      } catch {}
+    };
+    // Apply now, then re-assert a couple of times: the new timeframe's data can
+    // arrive in more than one batch, and each applyNewData re-frames the chart to
+    // the latest bars — so a single apply gets clobbered. Re-asserting over ~0.5s
+    // makes the restored window stick.
+    applyView();
+    setTimeout(applyView, 160);
+    setTimeout(applyView, 420);
   };
 
   // ---- Indicators: sync chart indicators with the persisted name list ----
@@ -696,6 +793,10 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     // away (toolbar delete, on-chart × pill, clear-all, or klinecharts itself).
     const id = chart.createOverlay({
       name: overlayName,
+      // Tag the overlay with its pane so the time-anchored tools can look up this
+      // pane's loaded-bar window (see lib/overlayTimeCtx) and re-project anchors
+      // that fall outside it when the timeframe changes.
+      extendData: { paneId },
       onDrawEnd: () => { bumpDraw(); },
       onRemoved: () => {
         overlayIdsRef.current = overlayIdsRef.current.filter((x) => x !== id);

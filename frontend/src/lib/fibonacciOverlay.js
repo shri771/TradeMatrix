@@ -1,4 +1,5 @@
 import { registerOverlay } from "klinecharts";
+import { correctOverlayX } from "./overlayTimeCtx";
 
 // Custom Fibonacci-line overlay. Registers under the same `fibonacciLine` name as
 // KLineChart's built-in, so this REPLACES it — the ✎ menu's "Fibonacci" entry uses
@@ -90,9 +91,13 @@ export function registerFibonacciOverlay() {
       return false;
     },
 
-    createPointFigures: ({ coordinates, overlay, bounding }) => {
+    createPointFigures: ({ coordinates, overlay, bounding, barSpace }) => {
       if (coordinates.length < 2) return [];
-      const [p1, p2, edge] = coordinates;
+      // Re-project each anchor's x from its true timestamp so anchors drawn on
+      // another timeframe don't snap to bar 0 (levels drifting left) or collapse
+      // the 3rd-anchor right edge onto xLeft (levels running to infinity). Anchors
+      // whose time isn't in the loaded window sit at their real, off-screen x.
+      const [p1, p2, edge] = correctOverlayX(overlay, coordinates, barSpace);
       const price1 = overlay.points[0]?.value ?? 0;
       const price2 = overlay.points[1]?.value ?? 0;
       const priceRange = price2 - price1;
@@ -101,13 +106,8 @@ export function registerFibonacciOverlay() {
       // Left edge = the leftmost of the two anchors.
       // Right edge = the 3rd anchor if placed & to the right of xLeft; while
       // the user's still picking the 3rd click, fall back to the chart edge.
-      // Clamp x to the chart width so an anchor whose timestamp falls outside the
-      // loaded/revealed data (common after switching to a coarser timeframe)
-      // extrapolates to a huge off-screen x and no longer makes the levels run to
-      // infinity.
-      const clampX = (x) => Math.max(-1, Math.min((bounding.width ?? 0) + 1, x));
-      const xLeft = clampX(Math.min(p1.x, p2.x));
-      const xRight = clampX(edge && edge.x > Math.min(p1.x, p2.x) ? edge.x : bounding.width);
+      const xLeft = Math.min(p1.x, p2.x);
+      const xRight = edge && edge.x > Math.min(p1.x, p2.x) ? edge.x : bounding.width;
 
       const figs = [];
 
@@ -115,7 +115,7 @@ export function registerFibonacciOverlay() {
       // stock built-in's UX affordance so the user knows where they clicked.
       figs.push({
         type: "line",
-        attrs: { coordinates: [{ x: clampX(p1.x), y: p1.y }, { x: clampX(p2.x), y: p2.y }] },
+        attrs: { coordinates: [{ x: p1.x, y: p1.y }, { x: p2.x, y: p2.y }] },
         styles: { color: COLOR_BASE, size: 1, style: "dashed", dashedValue: [3, 3] },
       });
 

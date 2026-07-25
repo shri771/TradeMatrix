@@ -168,5 +168,5 @@ export function useChart(interval) {
     try { chart.scrollToRealTime(200); } catch {}
   };
 
-  return { hostRef, chartRef, ready, resetView };
+  return { hostRef, chartRef, ready, resetView, initialBarSpaceRef };
 }

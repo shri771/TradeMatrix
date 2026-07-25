@@ -1,4 +1,5 @@
 import { registerOverlay } from "klinecharts";
+import { correctOverlayX } from "./overlayTimeCtx";
 
 // Long / Short position drawing tools, inspired by TradingView's tools of the
 // same name. Three anchor clicks: entry, stop-loss, take-profit. The overlay
@@ -111,9 +112,13 @@ function makeTemplate(name) {
       return false;
     },
 
-    createPointFigures: ({ coordinates, bounding, overlay }) => {
+    createPointFigures: ({ coordinates, bounding, overlay, barSpace }) => {
       if (coordinates.length < 3) return [];
-      const [entry, sl, tp, edge] = coordinates;
+      // Re-project each anchor's x from its true timestamp so switching timeframe
+      // (esp. in replay) doesn't collapse the right-edge handle onto the entry —
+      // which used to make xRight fall back to the full chart width, i.e. the zone
+      // "extending to infinity". In-window anchors are unchanged.
+      const [entry, sl, tp, edge] = correctOverlayX(overlay, coordinates, barSpace);
       const entryPrice = overlay.points[0]?.value ?? 0;
       const slPrice = overlay.points[1]?.value ?? 0;
       const tpPrice = overlay.points[2]?.value ?? 0;
