@@ -43,6 +43,18 @@ function dateInputToTs(v) {
   return Number.isNaN(t) ? null : Math.floor(t / 1000);
 }
 
+// The hidden native <input type=date> that backs the calendar button needs an
+// ISO "YYYY-MM-DD" value; convert to/from it separately from the dd/mm/yyyy text.
+function tsToNativeDate(ts) {
+  if (ts == null) return "";
+  return new Date(ts * 1000).toISOString().slice(0, 10);
+}
+function nativeDateToTs(v) {
+  if (!v) return null;
+  const t = new Date(v + "T23:59:59Z").getTime();
+  return Number.isNaN(t) ? null : Math.floor(t / 1000);
+}
+
 export default function ReplayBar() {
   const {
     mode,
@@ -67,6 +79,7 @@ export default function ReplayBar() {
   // pointer capture keeps the drag alive even if the pointer leaves the handle.
   const barRef = useRef(null);
   const dragRef = useRef(null); // { dx, dy } offset from bar top-left at drag start
+  const dateNativeRef = useRef(null); // hidden native date input behind the 📅 button
   const [pos, setPos] = useState(loadPos);
 
   // Local text for the "As of" input so partial/invalid typing (e.g. "09/03/20")
@@ -150,22 +163,48 @@ export default function ReplayBar() {
       </button>
 
       <label className="rb-label">As of</label>
-      <input
-        type="text"
-        className="rb-date"
-        inputMode="numeric"
-        placeholder="dd/mm/yyyy"
-        maxLength={10}
-        value={dateText}
-        onChange={(e) => {
-          const v = e.target.value;
-          setDateText(v);
-          if (v.trim() === "") { setEndTs(null); return; }
-          const ts = dateInputToTs(v);
-          if (ts != null) setEndTs(ts);
-        }}
-        title="Load history up to this date (dd/mm/yyyy; blank = latest)"
-      />
+      <div className="rb-date-wrap">
+        <input
+          type="text"
+          className="rb-date"
+          inputMode="numeric"
+          placeholder="dd/mm/yyyy"
+          maxLength={10}
+          value={dateText}
+          onChange={(e) => {
+            const v = e.target.value;
+            setDateText(v);
+            if (v.trim() === "") { setEndTs(null); return; }
+            const ts = dateInputToTs(v);
+            if (ts != null) setEndTs(ts);
+          }}
+          title="Load history up to this date (dd/mm/yyyy; blank = latest)"
+        />
+        <button
+          type="button"
+          className="rb-btn rb-cal"
+          title="Pick a date"
+          onClick={() => {
+            const el = dateNativeRef.current;
+            if (!el) return;
+            try { el.showPicker(); } catch { el.focus(); el.click(); }
+          }}
+        >
+          📅
+        </button>
+        {/* Hidden native date input — provides the calendar popup for the button
+            above; its value stays in sync with endTs so the picker opens on the
+            current "As of" date. */}
+        <input
+          ref={dateNativeRef}
+          type="date"
+          className="rb-date-native"
+          tabIndex={-1}
+          aria-hidden="true"
+          value={tsToNativeDate(endTs)}
+          onChange={(e) => setEndTs(nativeDateToTs(e.target.value))}
+        />
+      </div>
 
       <button className="rb-btn" onClick={stepBack} title="Step back">⏮</button>
       <button className="rb-btn rb-play" onClick={playing ? pause : play} title={playing ? "Pause" : "Play"}>
