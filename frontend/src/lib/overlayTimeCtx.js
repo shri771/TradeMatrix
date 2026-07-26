@@ -37,24 +37,62 @@ export function clearPaneTimeCtx(paneId) {
   if (paneId != null) ctxByPane.delete(paneId);
 }
 
-// Extrapolate a single point's x. `snappedX` is KLineChart's coordinate for the
-// point (== bar 0's x when the timestamp is left of the window, == bar N-1's x
-// when it's right of it, because of the nearest-bar clamp), so we only need to
-// offset it by however many bars the timestamp lies beyond that edge.
-//
-// `msPerBar` is the AVERAGE real time each bar covers in the loaded window, NOT
-// the nominal interval — markets have gaps (nights, weekends, holidays), so a 1h
-// chart of an equity averages ~5h of wall-clock per bar. Using the nominal 1h
-// here overcounted bars ~5x and dragged anchors far to the left ("drawn on 15–17,
-// shown on 14–15"). The gap-inclusive average keeps the projection honest as long
-// as the gap pattern outside the window resembles the pattern inside it.
+// KLineChart's binarySearchNearest — replicated EXACTLY so we know which bar index
+// `snappedX` corresponds to. It maps a timestamp to the NEAREST loaded bar, clamped
+// to [0, n-1]. Its quirk is what causes the bug we fix below: a coarse-timeframe
+// anchor's timestamp (e.g. a daily bar stamped at 00:00, which lands in the
+// overnight GAP between intraday sessions) rounds to whichever whole session-edge
+// bar is marginally closer — so two anchors a day apart can snap to different sides
+// and the drawing lands on the wrong candles after a timeframe switch.
+function nearestBarIndex(times, t) {
+  let left = 0, right = times.length - 1;
+  while (left !== right) {
+    const midIndex = (left + right) >> 1;
+    const width = right - left;
+    if (t === times[left]) return left;
+    if (t === times[right]) return right;
+    if (t === times[midIndex]) return midIndex;
+    if (t > times[midIndex]) left = midIndex; else right = midIndex;
+    if (width <= 2) break;
+  }
+  return left;
+}
+
+// The TRUE fractional bar index of a timestamp: whole bars before it, plus the
+// fraction of the way it sits between its two flanking bars. On a gap-collapsed
+// axis (every bar is one slot wide regardless of the real time gap) this is the
+// only position that means "the same moment" on every timeframe. Outside the loaded
+// window we extrapolate by the average ms-per-bar (gap-inclusive).
+function fractionalBarIndex(times, t, msPerBar) {
+  const n = times.length;
+  if (t <= times[0]) return msPerBar ? -((times[0] - t) / msPerBar) : 0;
+  if (t >= times[n - 1]) return (n - 1) + (msPerBar ? (t - times[n - 1]) / msPerBar : 0);
+  // Largest i with times[i] <= t.
+  let lo = 0, hi = n - 1;
+  while (lo < hi) { const m = (lo + hi + 1) >> 1; if (times[m] <= t) lo = m; else hi = m - 1; }
+  const span = times[lo + 1] - times[lo];
+  return lo + (span > 0 ? (t - times[lo]) / span : 0);
+}
+
+// Re-project a point's x from its timestamp. `snappedX` is KLineChart's coordinate
+// for the point (the pixel of the NEAREST bar). Because the axis is linear in bar
+// index at `barPx` px per bar, the exact position is snappedX shifted by the gap
+// between the point's TRUE fractional index and the nearest whole index KLineChart
+// used. This keeps a drawing anchored to the same real time across timeframe
+// switches (in-window: exact & gap-aware; out-of-window: extrapolated).
 function projectX(ctx, timestamp, snappedX, barPx) {
   if (!ctx || !Number.isFinite(timestamp) || !Number.isFinite(snappedX) || !barPx) return snappedX;
-  const { firstTs, lastTs, msPerBar } = ctx;
+  const { firstTs, lastTs, msPerBar, times } = ctx;
+  if (times && times.length >= 2) {
+    const nearIdx = nearestBarIndex(times, timestamp);
+    const fracIdx = fractionalBarIndex(times, timestamp, msPerBar);
+    return snappedX + (fracIdx - nearIdx) * barPx;
+  }
+  // Fallback (no per-bar times published yet): average-density edge extrapolation.
   if (!msPerBar) return snappedX;
   if (timestamp < firstTs) return snappedX - ((firstTs - timestamp) / msPerBar) * barPx;
   if (timestamp > lastTs) return snappedX + ((timestamp - lastTs) / msPerBar) * barPx;
-  return snappedX; // in-window: KLineChart's nearest-bar coordinate is accurate
+  return snappedX;
 }
 
 /**

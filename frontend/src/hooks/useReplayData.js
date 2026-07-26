@@ -25,7 +25,7 @@ export function replayLimit(interval) {
  * candles with time <= the global wall-clock so all panes stay time-aligned.
  * No-op unless `enabled`.
  */
-export function useReplayData({ paneId, source, symbol, interval, enabled, chartRef, ready, onPrice, onLoading }) {
+export function useReplayData({ paneId, source, symbol, interval, enabled, chartRef, ready, onPrice, onLoading, coverSince }) {
   const { clock, endTs, registerPane, unregisterPane } = useReplay();
   const dataRef = useRef([]);
   const renderedRef = useRef(0);
@@ -37,7 +37,20 @@ export function useReplayData({ paneId, source, symbol, interval, enabled, chart
     (async () => {
       onLoading?.(true);
       try {
-        const cs = await fetchCandles(source, symbol, interval, replayLimit(interval), endTs);
+        // Normally load the coordinated replay window. But if a drawing sits further
+        // back than that (common after drawing on a higher timeframe then switching
+        // to a lower one, where the same bar count spans far fewer days), load enough
+        // extra history to reach it so it stays anchored to its candles. `coverSince`
+        // is ms; bar count is nominal-interval-based (over-estimates for gapped markets,
+        // which just fetches a little extra) and capped at the backend max.
+        let limit = replayLimit(interval);
+        if (Number.isFinite(coverSince)) {
+          const endRefS = endTs ?? Math.floor(Date.now() / 1000);
+          const sec = INTERVAL_SECONDS[interval] || 60;
+          const needBars = Math.ceil((endRefS - coverSince / 1000) / sec) + 60;
+          if (needBars > limit) limit = Math.min(MAX_REPLAY_BARS, needBars);
+        }
+        const cs = await fetchCandles(source, symbol, interval, limit, endTs);
         if (cancelled) return;
         dataRef.current = cs;
         renderedRef.current = 0;
@@ -68,6 +81,10 @@ export function useReplayData({ paneId, source, symbol, interval, enabled, chart
       cancelled = true;
       unregisterPane(paneId);
     };
+    // coverSince intentionally NOT a dep: a timeframe switch (interval change) already
+    // re-runs this and captures the current coverSince, and same-timeframe drawings are
+    // always inside the loaded window — so we avoid a refetch on every draw (which would
+    // stall on slow sources like Databento).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, ready, source, symbol, interval, endTs]);
 

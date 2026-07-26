@@ -143,7 +143,7 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     const nominalMs = (INTERVAL_SECONDS[config.interval] || 60) * 1000;
     const msPerBar =
       data.length > 1 && lastTs > firstTs ? (lastTs - firstTs) / (data.length - 1) : nominalMs;
-    setPaneTimeCtx(paneId, { firstTs, lastTs, msPerBar });
+    setPaneTimeCtx(paneId, { firstTs, lastTs, msPerBar, times: data.map((d) => d.timestamp) });
   };
 
   // Update the ticker and mark the trading account at the pane's current price.
@@ -189,6 +189,25 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     onLoading: setLoading,
   });
 
+  // Oldest user-drawing anchor time (quantized to the day so small edits don't churn
+  // the replay fetch). In replay a finer timeframe reveals far fewer calendar days
+  // than a daily view, so a drawing made on the higher timeframe can fall outside
+  // the loaded finer-TF window and land off its candles — passing this lets the
+  // replay loader fetch enough history to cover it. Recomputed every render; the
+  // draw lifecycle (bumpDraw) re-renders whenever a drawing is added/moved/removed.
+  const drawingsMinTs = (() => {
+    const chart = chartRef.current;
+    if (!chart) return null;
+    let min = null;
+    for (const id of overlayIdsRef.current) {
+      const ov = chart.getOverlayById?.(id);
+      for (const p of ov?.points ?? []) {
+        if (Number.isFinite(p?.timestamp)) min = min == null ? p.timestamp : Math.min(min, p.timestamp);
+      }
+    }
+    return min == null ? null : Math.floor(min / 86400000) * 86400000;
+  })();
+
   // Replay feed (active in replay mode) — driven by the global clock.
   useReplayData({
     paneId,
@@ -200,6 +219,7 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     ready,
     onPrice: mark,
     onLoading: setLoading,
+    coverSince: drawingsMinTs,
   });
 
   // Endless history (live mode): when the user scrolls back to the oldest bar,
@@ -255,7 +275,8 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
   };
 
   // Snapshot the visible [leftTs, rightTs] time window from the current (old)
-  // timeframe's bars.
+  // timeframe's bars, plus the time span covered by any user drawings. Anchor
+  // timestamps are absolute, so we can read them off the old timeframe's overlays.
   const captureViewForIntervalChange = (nextInterval) => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -267,20 +288,33 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
       const ri = Math.max(0, Math.min(data.length - 1, vr.to));
       const leftTs = data[li]?.timestamp;
       const rightTs = data[ri]?.timestamp;
+      // Span of user drawings currently on this pane, so the new timeframe can
+      // reopen framed on them instead of on the recent edge (which would leave a
+      // drawing made further back off-screen to the left).
+      let drawMin = null, drawMax = null;
+      for (const id of overlayIdsRef.current) {
+        const ov = chart.getOverlayById?.(id);
+        for (const p of ov?.points ?? []) {
+          if (Number.isFinite(p?.timestamp)) {
+            drawMin = drawMin == null ? p.timestamp : Math.min(drawMin, p.timestamp);
+            drawMax = drawMax == null ? p.timestamp : Math.max(drawMax, p.timestamp);
+          }
+        }
+      }
       if (leftTs != null && rightTs != null && rightTs > leftTs) {
-        pendingViewRef.current = { leftTs, rightTs, targetInterval: nextInterval };
+        pendingViewRef.current = { leftTs, rightTs, drawMin, drawMax, targetInterval: nextInterval };
       }
     } catch {}
   };
 
-  // After the new timeframe's data has loaded, scroll so the SAME moment in time
-  // sits at the right edge — but always at NORMAL candle width. An earlier version
-  // zoomed out to fit the whole captured span, which on a coarse→fine switch (e.g.
-  // a ~5-month daily view reopening on 1h ≈ 4000 bars) crushed the candles down to
-  // 1px until you hit Replay. Keeping the reset button's default width means the
-  // candles look right immediately; the drawing lands at its true time (see
-  // overlayTimeCtx) whether or not it happens to be on-screen. Runs once per switch
-  // (consumes the ref). Called from mark() after each data apply.
+  // After the new timeframe's data has loaded, reopen it on the SAME time window
+  // that was visible before the switch. Candle width ALWAYS stays at the normal
+  // default — we never shrink to fit a drawing's span, since that produced the
+  // "candles too small on switch" bug. We only SCROLL: to the drawing's right edge
+  // if there is one (so a line made on the old timeframe stays in view — its recent
+  // portion at least; scroll left for a wider one), otherwise to the same moment
+  // that was at the right edge before. Runs once per switch (consumes the ref).
+  // Called from mark() after each data apply.
   const restorePendingView = () => {
     const pv = pendingViewRef.current;
     const chart = chartRef.current;
@@ -292,13 +326,55 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     const applyView = () => {
       const c = chartRef.current;
       const d = c?.getDataList?.() ?? [];
-      if (!c || !d.length || config.interval !== pv.targetInterval) return;
+      const width = hostRef.current?.clientWidth ?? 0;
+      if (!c || !d.length || width <= 0 || config.interval !== pv.targetInterval) return;
       const normal = initialBarSpaceRef.current || 8;
+      const lastTs = d[d.length - 1].timestamp;
+      // Put the CURRENT price (the last candle / replay clock) in the CENTRE, with
+      // room to its right, instead of jammed against the right edge. We do that by
+      // reserving ~half the main plot width as right-offset (beyond the HTF panel's
+      // own reserved margin), then scrolling the last bar to that offset. Candle
+      // width always stays at the normal default (never shrunk). Drawings made near
+      // the current price come along into view; older ones are a scroll to the left.
+      const htfW = htfs.length ? htfPanelWidth(htfs.length, HTF_COUNT) : DEFAULT_RIGHT_OFFSET;
+      const centerOffset = Math.round(htfW + (width - htfW) / 2);
       try {
-        c.setBarSpace(normal);
-        c.scrollToTimestamp(pv.rightTs, 0);
+        c.setBarSpace(normal); // ALWAYS normal candle width
+        c.setOffsetRightDistance(centerOffset);
+        c.scrollToRealTime(0); // last bar to the offset position → current price centred
       } catch {}
     };
+
+    // If the drawings sit further back than the finer timeframe's initial history
+    // (the coarse→fine case: 1h loads far fewer days than a daily view spans), the
+    // anchors fall outside the loaded window and get extrapolated off-screen. Fetch
+    // older bars to actually COVER them so they resolve to real candles at the exact
+    // spot. One targeted fetch, async so it never blocks the switch. Live mode only —
+    // replay manages its own coordinated window.
+    const ensureDrawingCovered = async () => {
+      if (isReplay || pv.drawMin == null) return;
+      const c0 = chartRef.current;
+      const d0 = c0?.getDataList?.() ?? [];
+      if (!c0 || !d0.length || config.interval !== pv.targetInterval) return;
+      if (d0[0].timestamp <= pv.drawMin) return; // already covered
+      const intervalMs = (INTERVAL_SECONDS[config.interval] || 60) * 1000;
+      // Nominal-interval bar count over-estimates for gapped markets (fewer real
+      // bars than wall-clock hours), which is fine here — it just fetches a little
+      // extra history, guaranteeing the drawing is covered. Capped at the backend max.
+      const needBars = Math.ceil((pv.rightTs - pv.drawMin) / intervalMs) + 60;
+      const limit = Math.min(5000, Math.max(needBars, 500));
+      try {
+        const older = await fetchCandles(config.source, config.symbol, config.interval, limit, Math.floor(pv.rightTs / 1000));
+        const c = chartRef.current;
+        if (!c || config.interval !== pv.targetInterval) return;
+        const firstNow = c.getDataList?.()[0]?.timestamp ?? Infinity;
+        const prepend = older.filter((x) => x.time * 1000 < firstNow).map(toKline);
+        if (prepend.length) { c.applyMoreData(prepend, true); refreshTimeCtx(); }
+        applyView(); // re-frame now that the drawing's bars exist
+        setTimeout(applyView, 120);
+      } catch {}
+    };
+
     // Apply now, then re-assert a couple of times: the new timeframe's data can
     // arrive in more than one batch, and each applyNewData re-frames the chart to
     // the latest bars — so a single apply gets clobbered. Re-asserting over ~0.5s
@@ -306,6 +382,7 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     applyView();
     setTimeout(applyView, 160);
     setTimeout(applyView, 420);
+    ensureDrawingCovered(); // fire-and-forget: backfills history if a drawing is older (live)
   };
 
   // ---- Indicators: sync chart indicators with the persisted name list ----
