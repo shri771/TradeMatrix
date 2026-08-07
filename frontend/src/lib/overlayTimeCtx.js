@@ -96,6 +96,50 @@ function projectX(ctx, timestamp, snappedX, barPx) {
 }
 
 /**
+ * Give every anchor a real `timestamp`, back-filling any that are missing.
+ *
+ * WHY anchors go missing a timestamp
+ * ----------------------------------
+ * A drawing click that lands in the BLANK area to the right of the last loaded
+ * bar (common for a support/resistance line drawn into the future, and the norm
+ * in replay / with price centred so the right half is empty) has no bar to map
+ * to. KLineChart's `_coordinateToPoint` therefore stores that anchor with
+ * `timestamp: undefined`, holding it ONLY by `dataIndex`. A raw bar index is
+ * meaningless on another timeframe: on a switch KLineChart's `updatePointPosition`
+ * re-reads `newData[oldDataIndex]` and the anchor teleports to an unrelated
+ * (usually far earlier) bar — the "drawing jumps to the left when I go to a lower
+ * timeframe" bug. `correctOverlayX` can't rescue it because there's no timestamp
+ * to project from.
+ *
+ * THE FIX
+ * -------
+ * At draw-end / drag-end we convert each timestamp-less anchor's `dataIndex` into a
+ * real wall-clock time by extrapolating along this pane's linear bar axis
+ * (`firstTs + dataIndex * msPerBar`, the SAME gap-inclusive cadence projectX uses,
+ * so there is ZERO shift on the timeframe it was drawn on). Once the anchor carries
+ * a finite timestamp, KLineChart leaves it alone (updatePointPosition only touches
+ * timestamp-less points) and re-derives its bar every render from that time — so it
+ * stays put across timeframe switches and replay.
+ *
+ * Returns a new `points` array when anything was filled, else null (caller skips
+ * the overrideOverlay). Requires `overlay.extendData.paneId` and a published ctx.
+ */
+export function fillMissingAnchorTimes(overlay, paneId) {
+  const ctx = paneId != null ? ctxByPane.get(paneId) : null;
+  const pts = overlay?.points;
+  if (!ctx || !Array.isArray(pts) || !pts.length) return null;
+  const { firstTs, msPerBar } = ctx;
+  if (!Number.isFinite(firstTs) || !msPerBar) return null;
+  let changed = false;
+  const out = pts.map((p) => {
+    if (Number.isFinite(p?.timestamp) || !Number.isFinite(p?.dataIndex)) return p;
+    changed = true;
+    return { ...p, timestamp: Math.round(firstTs + p.dataIndex * msPerBar) };
+  });
+  return changed ? out : null;
+}
+
+/**
  * Return a copy of `coordinates` with each x re-projected from the matching
  * overlay point's timestamp (see projectX). Requires the overlay to carry
  * `extendData.paneId` (ChartPane sets this on every user-drawn overlay) so we can

@@ -9,7 +9,7 @@ import { correctOverlayX } from "./overlayTimeCtx";
 // This is distinct from the full-width Horizontal line tool: this one is bounded
 // to a time span, so you can mark support/resistance over a specific window.
 
-const COLOR = "#2962ff"; // klinecharts default overlay blue
+const COLOR = "#26a69a"; // theme green (matches the up-candle colour)
 
 let registered = false;
 export function registerTrendLineOverlay() {

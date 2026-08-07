@@ -13,9 +13,11 @@ import { registerPositionOverlays } from "../lib/positionOverlay";
 import { registerFibonacciOverlay } from "../lib/fibonacciOverlay";
 import { registerTrendLineOverlay } from "../lib/trendLineOverlay";
 import { registerDatePriceRangeOverlay } from "../lib/datePriceRangeOverlay";
-import { setPaneTimeCtx, clearPaneTimeCtx } from "../lib/overlayTimeCtx";
+import { setPaneTimeCtx, clearPaneTimeCtx, fillMissingAnchorTimes } from "../lib/overlayTimeCtx";
 import { registerSmtOverlay } from "../lib/smtOverlay";
 import { detectDivergences } from "../lib/smtDetect";
+import { registerPspIndicator, PSP_INDICATOR } from "../lib/pspIndicator";
+import { detectPsp } from "../lib/pspDetect";
 import TickerBar from "./TickerBar";
 import SymbolSearch from "./SymbolSearch";
 import TradePanel from "./TradePanel";
@@ -29,6 +31,7 @@ registerFibonacciOverlay();
 registerTrendLineOverlay();
 registerDatePriceRangeOverlay();
 registerSmtOverlay();
+registerPspIndicator();
 
 const MAIN_PANE = "candle_pane";
 const MAIN_INDICATORS = ["MA", "EMA", "BOLL"]; // overlaid on the price pane
@@ -44,9 +47,6 @@ const DEFAULT_RIGHT_OFFSET = 80;
 // two symbols' HTF candles alongside the main and highlight direction divergences.
 const SMT_TRIO = ["NQ.c.0", "ES.c.0", "YM.c.0"];
 const SMT_LABEL = { "NQ.c.0": "NQ", "ES.c.0": "ES", "YM.c.0": "YM" };
-// Correlate window fetched for replay SMT — matches REPLAY_BARS in useReplayData
-// so the correlate history spans the same window the main pane replays.
-const SMT_REPLAY_BARS = 1500;
 
 const toHtf = (c) => ({ t: c.time, o: c.open, h: c.high, l: c.low, c: c.close });
 
@@ -102,6 +102,8 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
   const smtOverlayIdsRef = useRef(new Set()); // SMT divergence overlay ids
   const smtSigRef = useRef(""); // signature of the last-drawn divergence set
   const smtCorrelateRef = useRef({ key: null, promise: null }); // cached correlate fetch
+  const pspSigRef = useRef(""); // signature of the last-drawn PSP marker set
+  const pspCorrelateRef = useRef({ key: null, promise: null }); // cached PSP correlate fetch
   // Last-good HTF candles per `${source}|${symbol}|${htf}`. Lets a re-run (e.g.
   // toggling a new timeframe on) keep the already-loaded groups visible instead of
   // blanking them while every timeframe re-fetches, and lets a slow/failed refetch
@@ -123,6 +125,7 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
   const htfs = HTF_OPTIONS.filter((x) => (config.htfs ?? []).includes(x));
   const htfKey = htfs.join(",");
   const smtEnabled = !!config.smt && SMT_TRIO.includes(config.symbol);
+  const pspEnabled = !!config.psp && SMT_TRIO.includes(config.symbol);
 
   // Publish this pane's currently-loaded bar window so time-anchored overlays
   // (trend line, position, fibonacci) can re-project anchors that fall outside it
@@ -691,7 +694,14 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
       const asOf = isReplay ? endTs : undefined;
       const key = `${isReplay ? "R" : "L"}|${config.source}|${config.symbol}|${config.interval}|${asOf ?? "latest"}`;
       if (!isReplay || smtCorrelateRef.current.key !== key) {
-        const limit = isReplay ? SMT_REPLAY_BARS : Math.min(1000, mainData.length);
+        // Replay: fetch the SAME per-interval window the main pane replays
+        // (replayLimit is timeframe-scaled) so the correlate covers the whole
+        // replayable range. A fixed bar count under-reached on fine timeframes —
+        // e.g. 1500 5m bars span only ~5 days while the 5m main window spans ~17,
+        // so for most of the replay the correlate was entirely in the clock's
+        // future, got clipped to empty, and no SMT drew. Live: match the main's
+        // loaded bar count (capped) so freshly-formed swings line up.
+        const limit = isReplay ? replayLimit(config.interval) : Math.min(1000, mainData.length);
         smtCorrelateRef.current = {
           key,
           promise: Promise.all(
@@ -772,6 +782,135 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [smtEnabled, config.source, config.symbol, config.interval, isReplay]);
+
+  // ---- ICT Precision Swing Points (PSP) ----
+  // Candle-level cousin of SMT: mark each swing candle on this instrument whose
+  // CLOSE diverges from a correlate (NQ/ES/YM) — pivot high closing opposite is a
+  // bearish PSP, pivot low a bullish PSP. Detection is computed here (it needs the
+  // correlate's candles) and pushed into the PSP indicator via `extendData.byTime`.
+  //
+  // Lifecycle effect: create/remove the indicator on toggle, and reset it (and the
+  // correlate cache) when the instrument or timeframe changes so stale markers
+  // don't linger while the fresh set is fetched.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !ready) return;
+    if (!pspEnabled) {
+      try { chart.removeIndicator(MAIN_PANE, PSP_INDICATOR); } catch {}
+      return;
+    }
+    try { chart.removeIndicator(MAIN_PANE, PSP_INDICATOR); } catch {}
+    chart.createIndicator({ name: PSP_INDICATOR, extendData: { byTime: {} } }, true, { id: MAIN_PANE });
+    // Freshly (re)created empty — force the detect effect to re-populate it rather
+    // than short-circuit on a matching signature (which would leave it blank).
+    pspSigRef.current = "";
+    return () => {
+      try { chart.removeIndicator(MAIN_PANE, PSP_INDICATOR); } catch {}
+      pspSigRef.current = "";
+      pspCorrelateRef.current = { key: null, promise: null };
+    };
+  }, [ready, pspEnabled, config.source, config.symbol, config.interval]);
+
+  // Detection effect: fetch the correlate window (cached in replay, refetched live
+  // so new bars show up), find diverging swing candles, and override the
+  // indicator's data only when the marker set actually changes (avoids per-tick
+  // thrash in replay). Both series are clipped to the clock in replay — never a
+  // swing the trader couldn't have seen "as of" that moment.
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart || !ready || !pspEnabled) return;
+    let cancelled = false;
+    const correlates = SMT_TRIO.filter((s) => s !== config.symbol);
+
+    // Returns true once the chart's candles are loaded (so the caller can stop
+    // fast-retrying), false while they're still pending.
+    const detect = async () => {
+      if (cancelled) return true;
+      const mainData = chart.getDataList?.() ?? [];
+      if (!mainData.length) return false; // candles not loaded yet — retry soon
+      let mainCandles = mainData.map((c) => ({
+        time: Math.floor(c.timestamp / 1000),
+        open: c.open,
+        high: c.high,
+        low: c.low,
+        close: c.close,
+      }));
+      if (isReplay && clock != null) mainCandles = mainCandles.filter((c) => c.time <= clock);
+      if (mainCandles.length < 3) return true;
+
+      const asOf = isReplay ? endTs : undefined;
+      const key = `${isReplay ? "R" : "L"}|${config.source}|${config.symbol}|${config.interval}|${asOf ?? "latest"}`;
+      if (pspCorrelateRef.current.key !== key) {
+        const limit = isReplay ? replayLimit(config.interval) : Math.min(1000, mainData.length);
+        pspCorrelateRef.current = {
+          key,
+          promise: Promise.all(
+            correlates.map(async (sym) => {
+              try {
+                const cs = await fetchCandles(config.source, sym, config.interval, limit, asOf);
+                return { symbol: sym, candles: cs };
+              } catch { return null; }
+            })
+          ),
+        };
+      }
+      const cors = (await pspCorrelateRef.current.promise).filter(Boolean);
+      if (cancelled || !chartRef.current) return true;
+
+      const corSeries = cors.map((cor) => {
+        let candles = cor.candles;
+        if (isReplay && clock != null) candles = candles.filter((c) => c.time <= clock);
+        return { label: SMT_LABEL[cor.symbol] ?? cor.symbol, candles };
+      });
+      const marks = detectPsp(mainCandles, corSeries);
+
+      const sig = marks.map((m) => `${m.time}${m.direction[0]}${m.labels.join("")}`).join("~");
+      if (sig === pspSigRef.current) return true;
+      pspSigRef.current = sig;
+
+      const byTime = {};
+      for (const m of marks) byTime[m.time] = { direction: m.direction, labels: m.labels };
+      // Re-create (rather than overrideIndicator) so the new markers reliably
+      // repaint: an extendData override alone doesn't force a redraw on a static
+      // chart, so the markers could stay invisible until the user panned/zoomed.
+      try {
+        chartRef.current.removeIndicator(MAIN_PANE, PSP_INDICATOR);
+        chartRef.current.createIndicator({ name: PSP_INDICATOR, extendData: { byTime } }, true, { id: MAIN_PANE });
+      } catch {}
+      return true;
+    };
+
+    let timer;
+    let cancelledLocal = false;
+    if (isReplay) {
+      // Replay re-runs this effect every clock tick (via deps), so a single pass is
+      // enough — no polling.
+      detect();
+    } else {
+      // Live: retry quickly until the candles have loaded and markers are drawn,
+      // then settle into a slow refresh. A fixed one-shot missed when the (sometimes
+      // slow) candle/correlate fetch hadn't landed yet, leaving PSP blank.
+      let attempts = 0;
+      const run = async () => {
+        if (cancelledLocal) return;
+        const ready2 = await detect();
+        if (cancelledLocal) return;
+        attempts += 1;
+        // Once loaded, refresh correlates on the next slow tick so new bars show up.
+        if (ready2) pspCorrelateRef.current = { key: null, promise: null };
+        const delay = ready2 ? 30_000 : Math.min(5_000, 500 * attempts);
+        timer = setTimeout(run, delay);
+      };
+      timer = setTimeout(run, 300);
+    }
+
+    return () => {
+      cancelled = true;
+      cancelledLocal = true;
+      if (timer) clearTimeout(timer);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, pspEnabled, config.source, config.symbol, config.interval, isReplay, clock, endTs]);
 
   const toggleHtf = (htf) => {
     const next = htfs.includes(htf) ? htfs.filter((h) => h !== htf) : [...htfs, htf];
@@ -864,6 +1003,21 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
 
   const bumpDraw = () => setDrawVersion((v) => v + 1);
 
+  // Back-fill a real timestamp on any anchor that landed in the blank area past the
+  // last bar (KLineChart leaves those timestamp-less, anchored only by a raw bar
+  // index that means nothing on another timeframe — the "drawing jumps left on a
+  // lower timeframe" bug). Deferred to a microtask so we never re-enter KLineChart's
+  // draw/press event mid-dispatch; runs before any replay/live tick could clobber
+  // the point via updatePointPosition. See lib/overlayTimeCtx.fillMissingAnchorTimes.
+  const anchorOverlayTimes = (overlay) => {
+    if (!overlay?.id) return;
+    const points = fillMissingAnchorTimes(overlay, paneId);
+    if (!points) return;
+    Promise.resolve().then(() => {
+      try { chartRef.current?.overrideOverlay({ id: overlay.id, points }); } catch {}
+    });
+  };
+
   const startDraw = (overlayName) => {
     const chart = chartRef.current;
     if (!chart) return;
@@ -877,7 +1031,11 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
       // pane's loaded-bar window (see lib/overlayTimeCtx) and re-project anchors
       // that fall outside it when the timeframe changes.
       extendData: { paneId },
-      onDrawEnd: () => { bumpDraw(); },
+      onDrawEnd: (e) => { anchorOverlayTimes(e?.overlay); bumpDraw(); },
+      // A drag can push an endpoint into the blank area past the last bar, which
+      // re-strips its timestamp (same root cause as a draw click there) — re-anchor
+      // on drag-end too so a dragged handle also survives timeframe switches.
+      onPressedMoveEnd: (e) => { anchorOverlayTimes(e?.overlay); },
       onRemoved: () => {
         overlayIdsRef.current = overlayIdsRef.current.filter((x) => x !== id);
         bumpDraw();
@@ -1104,6 +1262,22 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
                     onChange={() => onConfigChange({ ...config, cisd: !config.cisd })}
                   />
                   Change in state of delivery
+                </label>
+                <label
+                  className="menu-item check"
+                  title={
+                    SMT_TRIO.includes(config.symbol)
+                      ? "ICT Precision Swing Point — marks swing candles that close opposite to a correlated index (NQ/ES/YM)"
+                      : "PSP works on NQ.c.0 / ES.c.0 / YM.c.0 — pick one of those first"
+                  }
+                >
+                  <input
+                    type="checkbox"
+                    checked={!!config.psp}
+                    disabled={!SMT_TRIO.includes(config.symbol)}
+                    onChange={() => onConfigChange({ ...config, psp: !config.psp })}
+                  />
+                  PSP (precision swing point)
                 </label>
               </div>
             )}
