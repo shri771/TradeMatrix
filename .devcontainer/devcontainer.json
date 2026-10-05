@@ -1,0 +1,25 @@
+{
+  "name": "TradeMatrix",
+  "image": "mcr.microsoft.com/devcontainers/python:3.12-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/node:1": { "version": "20" }
+  },
+
+  // One port serves everything: FastAPI hosts the built SPA plus /api and /ws on
+  // the same origin (the Dockerfile/Cloud Run mode), so there is a single link to
+  // share and no proxy or CORS hop.
+  "forwardPorts": [1030],
+  "portsAttributes": {
+    "1030": { "label": "TradeMatrix", "onAutoForward": "notify" }
+  },
+
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+
+  // postStartCommand runs on EVERY start — including a resume from idle-stop and a
+  // start triggered through the REST API, neither of which runs postAttachCommand.
+  // Backgrounded with nohup: a foreground server here would block codespace startup.
+  // Log: tail -f /tmp/tradematrix.log
+  "postStartCommand": "nohup bash .devcontainer/start.sh > /tmp/tradematrix.log 2>&1 &",
+
+  "hostRequirements": { "cpus": 2 }
+}
