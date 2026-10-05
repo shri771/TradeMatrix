@@ -5,13 +5,19 @@ FastAPI serves the built SPA plus `/api` and `/ws` on a single port, so there is
 one origin, one forwarded port, one link.
 
 > **Codespaces is a dev environment, not a host.** The link only works while the
-> codespace is *running*, and a codespace **stops after 30 minutes of inactivity**
-> (nobody clicking in the editor — browser traffic to the forwarded port does not
-> count as activity). See "Limits" at the bottom before relying on this.
+> codespace is *running*, and a codespace stops after a period of inactivity —
+> 30 min by default, 240 min max (step 1 below). Traffic to the forwarded port does
+> NOT count as activity; only interaction with the editor does. Read "Limits" at
+> the bottom before relying on this.
 
 ## One-time setup
 
-1. **Push this repo** (including `.devcontainer/`) to GitHub.
+1. **Raise the idle timeout before creating anything.**
+   https://github.com/settings/codespaces → *Default idle timeout* → `240` minutes.
+   It is applied at creation time, so changing it later won't affect a codespace
+   that already exists.
+
+   Then **push this repo** (including `.devcontainer/`) to GitHub.
 
 2. **Add the Databento key as a Codespaces secret** — skip if you don't need the
    futures symbols (NQ/ES/YM/GC/...); Hyperliquid crypto and yfinance stocks work
@@ -19,9 +25,20 @@ one origin, one forwarded port, one link.
 
    Repo → **Settings → Secrets and variables → Codespaces → New repository secret**
    - Name: `DATABENTO_API_KEY`
-   - Value: your key
+   - Value: the **raw key only** — no `DATABENTO_API_KEY=` prefix, no quotes, no
+     trailing newline. Print exactly that from your local checkout with:
 
-   It arrives in the container as a real env var, so nothing is ever committed.
+     ```bash
+     sed -n 's/^DATABENTO_API_KEY=//p' .env | tr -d "\"' \t\r\n"
+     ```
+
+     Pasting the whole `NAME=value` line instead makes the in-container value
+     `DATABENTO_API_KEY=db-...`, which fails auth silently: every futures fetch
+     returns `[]` and the charts are simply empty.
+
+   `.env` is gitignored, so it never reaches the codespace — the secret is how the
+   key gets in. `start.sh` prefers the env var and only falls back to sourcing
+   `.env` locally, so the same script covers both.
 
 3. **Create the codespace**: green **`<> Code`** button → **Codespaces** tab →
    **Create codespace on main**.
@@ -52,7 +69,11 @@ one origin, one forwarded port, one link.
    ```
 
    That name is fixed when the codespace is created, so the URL stays the same
-   across stop/start. Share it — anyone with it can open the dashboard.
+   across stop/start.
+
+   **Test it in an incognito window, not your normal browser.** Your logged-in
+   browser is authenticated to GitHub and loads the page even when the port is
+   still Private — incognito is the only way to confirm step 4 actually took.
 
 ## Day-to-day
 
@@ -72,11 +93,13 @@ Backend edits: restart `start.sh`. Add `--reload` to the uvicorn line in
 
 ## Limits — read before sharing the link
 
-- **Stops after 30 min idle.** The link 404s/times out until you restart the
-  codespace, and the server does not come back by itself — reattach, or run
-  `start.sh` again (`postAttachCommand` runs it when you open the codespace).
-  Raise the timeout at https://github.com/settings/codespaces → *Default idle
-  timeout* (max 240 min).
+- **Stops when idle** (30 min default, 240 min max). While stopped the link just
+  times out. Reopening the codespace from https://github.com/codespaces brings it
+  back on the same URL — `postStartCommand` relaunches the server unattended, and
+  port visibility persists, so there is nothing to redo.
+- **Stop it by hand when you're not demoing** — https://github.com/codespaces →
+  `...` → *Stop codespace*. This is the biggest lever on the quota below: a
+  codespace left idling for 4 hours spends 8 core-hours.
 - **Burns your free quota.** GitHub Free includes 120 core-hours/month; this
   config requests a 2-core machine, so ~60 wall-clock hours/month. Check
   https://github.com/settings/billing — once the quota is gone, codespaces either
