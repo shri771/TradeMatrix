@@ -17,7 +17,7 @@ fi
 
 LIBS=""
 for lib in libstdc++.so.6 libz.so.1; do
-  found="$(find /nix/store -name "$lib" 2>/dev/null | sort | tail -1 || true)"
+  found="$(find /nix/store -maxdepth 3 -name "$lib" 2>/dev/null | sort | tail -1 || true)"
   [ -n "$found" ] && LIBS="${LIBS:+$LIBS:}$(dirname "$found")"
 done
 if [ -n "$LIBS" ]; then
