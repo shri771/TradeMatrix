@@ -352,10 +352,16 @@ class DatabentoSource(DataSource):
             if interval in ("3m", "5m", "15m"):
                 # These chart windows need far less 1m history than the shared
                 # envelope used by 30m; avoid fetching and resampling excess rows.
-                # For small requests (likely timeframe switches), use minimal buffer
-                # to avoid slow resampling of large 1m windows.
-                buffer = 1.1 if limit <= 1800 else _RESAMPLE_WINDOW_BUFFER
-                window = max(int(sec * limit * buffer), _INTRADAY_MIN_WINDOW)
+                # Cap the window to avoid slow resampling of massive 1m datasets.
+                # Calculate minimal buffer needed for gaps (weekends/holidays ~ 40% of days).
+                bar_window = int(sec * limit * 1.2)  # 20% gap buffer
+                # For larger requests, also add some extra history for context
+                if limit <= 2000:
+                    # Timeframe switches: minimal fetch
+                    window = max(bar_window, _INTRADAY_MIN_WINDOW)
+                else:
+                    # Larger replay windows: allow more context but not excessive
+                    window = min(max(bar_window * 2, _INTRADAY_MIN_WINDOW), 30 * 86400)
             else:
                 window = max(
                     int(_ENVELOPE_DAYS[schema] * 86400 * limit / 1500),
