@@ -85,6 +85,9 @@ class DatabentoSource(DataSource):
         # In-memory cache keyed by (symbol, schema, start_s, end_s) so the lazy-load
         # on scroll doesn't re-bill for the same window during a session.
         self._cache: dict[tuple[str, str, int, int], list[Candle]] = {}
+        # Cache resampled intervals to avoid re-resampling the same raw data
+        # when expanding a small initial window or switching timeframes.
+        self._resample_cache: dict[tuple[str, str, int, int], list[Candle]] = {}
         # Cache the dataset's available [start, end] per schema (refreshed every ~5 min).
         # Clamping both bounds prevents 422s when callers request a window that
         # extends past the available data on either side.
@@ -349,7 +352,10 @@ class DatabentoSource(DataSource):
             if interval in ("3m", "5m", "15m"):
                 # These chart windows need far less 1m history than the shared
                 # envelope used by 30m; avoid fetching and resampling excess rows.
-                window = max(int(sec * limit * _RESAMPLE_WINDOW_BUFFER), _INTRADAY_MIN_WINDOW)
+                # For small requests (likely timeframe switches), use minimal buffer
+                # to avoid slow resampling of large 1m windows.
+                buffer = 1.1 if limit <= 1800 else _RESAMPLE_WINDOW_BUFFER
+                window = max(int(sec * limit * buffer), _INTRADAY_MIN_WINDOW)
             else:
                 window = max(
                     int(_ENVELOPE_DAYS[schema] * 86400 * limit / 1500),
@@ -369,30 +375,41 @@ class DatabentoSource(DataSource):
         candles = await self._fetch_window_coalesced(symbol, schema, start_s, end_s)
 
         if rule and candles:
-            df = pd.DataFrame(
-                [
-                    {"t": c.time, "open": c.open, "high": c.high, "low": c.low, "close": c.close, "volume": c.volume}
-                    for c in candles
-                ]
-            )
-            df["t"] = pd.to_datetime(df["t"], unit="s", utc=True)
-            df = df.set_index("t")
-            agg = (
-                df.resample(rule, label="left", closed="left")
-                .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
-                .dropna(subset=["open", "high", "low", "close"])
-            )
-            candles = [
-                Candle(
-                    time=int(ts.timestamp()),
-                    open=float(r["open"]),
-                    high=float(r["high"]),
-                    low=float(r["low"]),
-                    close=float(r["close"]),
-                    volume=float(r["volume"]),
+            resample_key = (symbol, interval, start_s, end_s)
+            cached_resample = self._resample_cache.get(resample_key)
+            if cached_resample is not None:
+                candles = cached_resample
+            else:
+                df = pd.DataFrame(
+                    [
+                        {"t": c.time, "open": c.open, "high": c.high, "low": c.low, "close": c.close, "volume": c.volume}
+                        for c in candles
+                    ]
                 )
-                for ts, r in agg.iterrows()
-            ]
+                df["t"] = pd.to_datetime(df["t"], unit="s", utc=True)
+                df = df.set_index("t")
+                agg = (
+                    df.resample(rule, label="left", closed="left")
+                    .agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+                    .dropna(subset=["open", "high", "low", "close"])
+                )
+                candles = [
+                    Candle(
+                        time=int(ts.timestamp()),
+                        open=float(r["open"]),
+                        high=float(r["high"]),
+                        low=float(r["low"]),
+                        close=float(r["close"]),
+                        volume=float(r["volume"]),
+                    )
+                    for ts, r in agg.iterrows()
+                ]
+                # Cache the resampled result (bounded like raw cache)
+                with self._cache_lock:
+                    self._resample_cache[resample_key] = candles
+                    if len(self._resample_cache) > _CACHE_MAX_ENTRIES // 2:
+                        for k in list(self._resample_cache.keys())[: _CACHE_MAX_ENTRIES // 4]:
+                            del self._resample_cache[k]
         return candles[-limit:]
 
     async def stream(self, symbol: str, interval: str) -> AsyncIterator[Candle]:
