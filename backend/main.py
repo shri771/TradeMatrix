@@ -39,19 +39,22 @@ async def _prefetch_databento() -> None:
         _prefetch_log.info("Databento client not configured — skipping prefetch")
         return
 
-    # Prefetch native schemas: 1m warms 1m/3m/30m via the envelope, 1h warms 1h/4h
-    # via its envelope, and 5m/15m use their own narrower windows.
+    # Prefetch primary symbols with compact limits (300 bars) so warmup finishes in
+    # seconds without saturating Databento's rate limits.
+    primary_symbols = ["NQ.c.0", "ES.c.0", "YM.c.0"]
+    other_symbols = [s["symbol"] for s in _SYMBOLS if s["symbol"] not in primary_symbols]
     intervals = ("1m", "1h", "1d")
-    jobs = [(entry["symbol"], iv) for entry in _SYMBOLS for iv in intervals]
+
+    jobs = [(sym, iv) for sym in primary_symbols for iv in intervals]
     total = len(jobs)
-    sem = asyncio.Semaphore(4)  # cap concurrency at 4 to stay under trial-tier limits
+    sem = asyncio.Semaphore(2)  # conservative concurrency to avoid rate limiting
     done = 0
 
-    async def one(sym: str, iv: str) -> None:
+    async def one(sym: str, iv: str, limit: int = 300) -> None:
         nonlocal done
         async with sem:
             try:
-                candles = await src.get_candles(sym, iv, limit=1500)
+                candles = await src.get_candles(sym, iv, limit=limit)
                 done += 1
                 _prefetch_log.info(
                     "PREFETCH ok %s %s (%d/%d) rows=%d", sym, iv, done, total, len(candles)
@@ -63,7 +66,15 @@ async def _prefetch_databento() -> None:
                 )
 
     await asyncio.gather(*(one(sym, iv) for sym, iv in jobs), return_exceptions=True)
-    _prefetch_log.info("PREFETCH done: %d requests", total)
+    _prefetch_log.info("PREFETCH primary done: %d requests", total)
+
+    # Lazily warm the remaining symbols in the background with 1-worker concurrency
+    for sym in other_symbols:
+        for iv in intervals:
+            try:
+                await src.get_candles(sym, iv, limit=300)
+            except Exception:
+                pass
 
 
 @asynccontextmanager

@@ -12,9 +12,9 @@ import { useReplay } from "../replay/ReplayProvider";
 // registerPane below). Coarse timeframes thus show plenty of history on the left
 // while the replayable/coordinated span stays consistent.
 const REPLAY_WINDOW_SEC = 45 * 86400; // ~45 days — the coordinated clock range
-const MAX_REPLAY_BARS = 5000;         // backend per-request cap
+const MAX_REPLAY_BARS = 3000;         // backend per-request cap
 const MIN_REPLAY_BARS = 300;          // floor so coarse timeframes still fill the chart
-const REPLAY_SWITCH_LIMIT = 1800;      // keep timeframe switches responsive without losing chart context
+const REPLAY_SWITCH_LIMIT = 1500;     // keep replay window responsive without losing chart context
 const REPLAY_SWITCH_INITIAL_BARS = 300; // paint quickly, then expand the window in the background
 export function replayLimit(interval) {
   const sec = INTERVAL_SECONDS[interval] || 60;
@@ -90,12 +90,8 @@ export function useReplayData({ paneId, source, symbol, interval, enabled, chart
         // based (over-estimates for gapped markets, which just fetches a little extra)
         // and capped at the backend max.
         const fullLimit = replayLimit(interval);
-        let limit = fullLimit;
-        if (replayFetchEnd(fetchAnchor, interval, fullLimit) == null || isTimeframeSwitch) {
-          // Bound latest-window fetches and timeframe switches so fine-grained
-          // intervals do not fetch and repaint thousands of bars unnecessarily.
-          limit = Math.min(limit, REPLAY_SWITCH_LIMIT);
-        }
+        // Bound replay limit so fine-grained intervals do not pull excess thousands of bars.
+        let limit = Math.min(fullLimit, REPLAY_SWITCH_LIMIT);
         // Derive the end from the bounded limit so the fetched slice still includes
         // the current clock instead of ending beyond it with too few bars.
         const fetchEnd = replayFetchEnd(fetchAnchor, interval, limit);
@@ -106,9 +102,9 @@ export function useReplayData({ paneId, source, symbol, interval, enabled, chart
           if (needBars > limit) limit = Math.min(MAX_REPLAY_BARS, needBars);
         }
         const completeLimit = limit;
-        const initialLimit = isTimeframeSwitch
-          ? Math.min(completeLimit, REPLAY_SWITCH_INITIAL_BARS)
-          : completeLimit;
+        // Always paint initial bars quickly (300 bars) on any replay load or date pick,
+        // then expand the window in the background if completeLimit is larger.
+        const initialLimit = Math.min(completeLimit, REPLAY_SWITCH_INITIAL_BARS);
         const initialEnd = initialLimit < completeLimit
           ? replayFetchEnd(fetchAnchor, interval, initialLimit)
           : fetchEnd;

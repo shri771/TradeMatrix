@@ -704,7 +704,7 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
         // so for most of the replay the correlate was entirely in the clock's
         // future, got clipped to empty, and no SMT drew. Live: match the main's
         // loaded bar count (capped) so freshly-formed swings line up.
-        const limit = isReplay ? replayLimit(config.interval) : Math.min(1000, mainData.length);
+        const limit = isReplay ? Math.min(600, replayLimit(config.interval)) : Math.min(600, mainData.length);
         smtCorrelateRef.current = {
           key,
           promise: Promise.all(
@@ -844,7 +844,7 @@ export default function ChartPane({ paneId, config, sources, onConfigChange }) {
       const asOf = isReplay ? (replayFetchEnd(activeTargetDate, config.interval) ?? undefined) : undefined;
       const key = `${isReplay ? "R" : "L"}|${config.source}|${config.symbol}|${config.interval}|${asOf ?? "latest"}`;
       if (pspCorrelateRef.current.key !== key) {
-        const limit = isReplay ? replayLimit(config.interval) : Math.min(1000, mainData.length);
+        const limit = isReplay ? Math.min(600, replayLimit(config.interval)) : Math.min(600, mainData.length);
         pspCorrelateRef.current = {
           key,
           promise: Promise.all(

@@ -40,8 +40,8 @@ _CACHE_MAX_ENTRIES = 512
 _CACHE_MAX_BYTES = 128 * 1024 * 1024
 
 # Shared native-data windows for resampled intervals, scaled to the requested
-# bar count. The 3m, 5m and 15m paths use smaller interval-specific windows instead.
-_ENVELOPE_DAYS = {"ohlcv-1m": 40, "ohlcv-1h": 400}
+# bar count. Intraday 1m data is capped to 12 days to avoid slow downloads.
+_ENVELOPE_DAYS = {"ohlcv-1m": 12, "ohlcv-1h": 90}
 
 # 3m, 5m and 15m windows are sized from the requested output bars instead of the
 # larger shared 1m-schema envelope. The buffer accounts for weekends and sessions.
@@ -241,13 +241,24 @@ class DatabentoSource(DataSource):
             return []
         win_days = (end_s - start_s) / 86400
         key = (symbol, schema, start_s, end_s)
-        cached = self._cache.get(key)
-        if cached is not None:
-            _log.info(
-                "DBN[%s %s win=%.1fd cache=HIT] rows=%d -> %.3fs",
-                symbol, schema, win_days, len(cached), _time.monotonic() - t0,
-            )
-            return cached
+        with self._cache_lock:
+            cached = self._cache.get(key)
+            if cached is not None:
+                _log.info(
+                    "DBN[%s %s win=%.1fd cache=HIT] rows=%d -> %.3fs",
+                    symbol, schema, win_days, len(cached), _time.monotonic() - t0,
+                )
+                return cached
+            # Check if any existing cached window for this symbol & schema covers [start_s, end_s]
+            for (sym, sch, c_start, c_end), c_candles in self._cache.items():
+                if sym == symbol and sch == schema and c_start <= start_s and c_end >= end_s:
+                    sub = [c for c in c_candles if start_s <= c.time <= end_s]
+                    self._cache[key] = sub
+                    _log.info(
+                        "DBN[%s %s win=%.1fd cache=SUBSET_HIT from [%d,%d]] rows=%d -> %.3fs",
+                        symbol, schema, win_days, c_start, c_end, len(sub), _time.monotonic() - t0,
+                    )
+                    return sub
         try:
             start = datetime.datetime.fromtimestamp(start_s, datetime.timezone.utc)
             end = datetime.datetime.fromtimestamp(end_s, datetime.timezone.utc)
@@ -349,33 +360,30 @@ class DatabentoSource(DataSource):
         if rule:
             envelope_bucket = 60 if schema == "ohlcv-1m" else 3600
             end_s = (end_s // envelope_bucket) * envelope_bucket
-            if interval in ("3m", "5m", "15m"):
-                # These chart windows need far less 1m history than the shared
-                # envelope used by 30m; avoid fetching and resampling excess rows.
-                # Cap the window to avoid slow resampling of massive 1m datasets.
-                # Calculate minimal buffer needed for gaps (weekends/holidays ~ 40% of days).
-                bar_window = int(sec * limit * 1.2)  # 20% gap buffer
-                # For larger requests, also add some extra history for context
-                if limit <= 2000:
-                    # Timeframe switches: minimal fetch
-                    window = max(bar_window, _INTRADAY_MIN_WINDOW)
-                else:
-                    # Larger replay windows: allow more context but not excessive
-                    window = min(max(bar_window * 2, _INTRADAY_MIN_WINDOW), 30 * 86400)
+            if schema == "ohlcv-1m":
+                # For 1m-resampled intervals (3m, 5m, 15m, 30m), size the window directly
+                # from the requested output bars. A 35% buffer comfortably accounts for weekends
+                # and non-trading hours on CME futures without pulling excess raw rows.
+                bar_window = int(sec * limit * 1.35)
+                # Cap the 1m raw window at 12 days to avoid slow downloads of massive datasets.
+                # 12 days is ~180 trading hours: ~720 15m bars, ~2100 5m bars, ~360 30m bars.
+                window = min(max(bar_window, _INTRADAY_MIN_WINDOW), 12 * 86400)
             else:
-                window = max(
-                    int(_ENVELOPE_DAYS[schema] * 86400 * limit / 1500),
-                    _INTRADAY_MIN_WINDOW,
-                )
+                # 4h resampled from ohlcv-1h: 1h bars are compact, so a moderate envelope works well.
+                bar_window = int(sec * limit * 1.35)
+                window = min(max(bar_window, _INTRADAY_MIN_WINDOW), 90 * 86400)
         else:
             bucket = max(60, sec)
             end_s = (end_s // bucket) * bucket
-            # CME futures trade ~23h/day, so gaps beyond weekends are rare. Tight
-            # buffer keeps payloads small.
-            buffer = 1.2
+            buffer = 1.35
             wanted = int(sec * limit * buffer)
-            min_window = _ONE_MINUTE_MIN_WINDOW if interval == "1m" else _INTRADAY_MIN_WINDOW
-            window = max(wanted, min_window) if sec < 86400 else wanted + 86400
+            if interval == "1m":
+                window = min(max(wanted, _ONE_MINUTE_MIN_WINDOW), 7 * 86400)
+            elif sec < 86400:
+                window = min(max(wanted, _INTRADAY_MIN_WINDOW), 90 * 86400)
+            else:
+                # 1d: native daily candles are 1 row/day. 1-2 years is plenty.
+                window = min(wanted + 86400, 730 * 86400)
         start_s = end_s - window
 
         candles = await self._fetch_window_coalesced(symbol, schema, start_s, end_s)
